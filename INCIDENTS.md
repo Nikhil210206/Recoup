@@ -676,3 +676,183 @@ None of the six adversarial passes has come back empty. I have stopped expecting
 one to.
 
 ---
+
+## 2026-08-27 — Day 7
+
+### The allocator lost to a 20-line heuristic, three times, before it won
+
+Day 7 built the allocator -- the layer the whole project is named for. It lost to
+the cause-aware baseline on the first three attempts, and each loss was a real
+defect rather than a tuning problem.
+
+**Loss 1: the model chose the action, and chose it badly.** The allocator asked
+the fitted uplift model which action to take. It picked `payment_link_whatsapp`
+2,032 times out of 2,173 -- and on a per-cause check, it selected the true-best
+action on **3 of 11 causes**.
+
+The model had learned the correct *global* answer (contacts recover more than
+retries on average) and could not express the per-cause interaction that actually
+decides the action. At ROC 0.62, that interaction is a second-order effect inside
+a first-order-noisy Bernoulli signal.
+
+This is day 4's lesson in a different costume: **do not use a model to rediscover
+what a published taxonomy already states.** Razorpay's error semantics say an
+expired card needs a different instrument and a bank outage needs a retry and no
+message. Handing action choice back to the taxonomy took it to 9 of 11.
+
+**Loss 2: the EV floor was suppressing free retries.** The gate ordering applied
+a Rs 50 expected-value threshold before checking whether the action even cost
+anything. Retries touch the gateway, not the customer, and consume none of the
+scarce resource -- but hundreds of them were being suppressed for failing to clear
+a threshold that exists to ration *contacts*. It cost more value than every other
+gate combined, and it looked like prudence.
+
+**Loss 3: the comparison itself was rigged, against us.** Every baseline had
+unlimited contacts while the allocator respected a budget. Contact-everything
+spent 4,074 contacts and "won". That is not a result, it is a policy ignoring the
+constraint it is supposed to respect. Under an equal budget the allocator wins by
+about 21%.
+
+A fourth bug surfaced while fixing the third: the bake-off harness only executed a
+baseline's *first* step, so contact-everything recorded **zero contacts** -- its
+first rung is a retry. A maximally aggressive policy was being scored as
+abstemious.
+
+### The ablation says most of the allocator does nothing
+
+Having made it win, I measured which parts were responsible. At a 600-contact
+budget:
+
+| variant | incremental |
+|---|---|
+| full (cause-rate estimator, cap 2) | Rs 37.07L |
+| **no uplift estimate at all** | **Rs 37.11L** |
+| no contact cap | Rs 36.87L |
+| per-case ML uplift model | Rs 28.09L |
+
+The uplift estimator contributes nothing. The contact cap contributes nothing.
+The per-case ML model is 24% *worse* than having no estimate.
+
+A cause-rate group-by -- roughly twenty numbers, computable in SQL -- tracks true
+uplift better (+0.362) than the fitted gradient-boosted model (+0.275). The
+structure in this problem is per-cause and the per-case model adds variance
+without adding signal.
+
+So the ML model is out of the decision path. It is retained for forecasting,
+where calibration measurably matters and a per-case number is what a merchant
+plans against. The contact cap stays because it protects a customer from being
+messaged repeatedly by agents that each believe they are the only one; costing
+nothing is the argument for keeping it, not against it.
+
+### A claim from days 5-6 was overstated, and is now corrected
+
+I wrote "ranking is worth ~1%". That compared EV-ranking against *amount*-ranking
+-- both value-aware. It never compared either against working a queue in
+**arrival order**, which is what a per-case agent actually does.
+
+Measured properly, it is two claims:
+
+- ordering by value vs arrival order: **+21%**
+- ordering by EV vs by amount: **+1%**
+
+Collapsing those into "ranking does not matter" was wrong, and it happens to have
+been wrong in the direction that made my own allocator look pointless. Both
+numbers are now in a test.
+
+### What the allocator is actually made of
+
+In descending order of measured contribution:
+
+1. **Action selection from the taxonomy** -- roughly +520%, deterministic, no model.
+2. **Value-ordered spending of a finite contact budget** -- roughly +21% over
+   arrival order.
+3. **Suppression of structurally futile causes** -- deterministic.
+4. Uplift estimation, contact cap, EV floor -- measurably ~0, kept for stated
+   reasons.
+
+Three days running now, the honest answer has been that a deterministic rule beat
+the learned component. That is becoming the actual finding of this project rather
+than an accident: in payments recovery the structure lives in a published
+taxonomy, not in the outcome data.
+
+---
+
+### Day 7 audit: my own baseline was a strawman, in my favour
+
+The allocator reported +21% over the best baseline. Asked to verify it, I built
+the two controls I had not built, and the number did not survive.
+
+**Bug 1: the bake-off executed one action per case.** Contact-everything's ladder
+is retry, WhatsApp, SMS, SMS. The harness walked to the first *contact* step and
+stopped, so its retry was discarded and a maximally aggressive multi-touch policy
+was scored on a single WhatsApp message. It recorded 530,593 -- a policy designed
+around escalation, measured as though it never escalated.
+
+**Bug 2, and the serious one: every baseline pooled all three loss channels into
+one queue.** Recoup's entire product argument is that Agent Studio runs separate
+agents per channel and nothing coordinates them. My control had already solved
+that problem for free. I was comparing a coordinated allocator against a
+coordinated baseline and calling the difference coordination.
+
+Both fixed: baselines now run their full ladder, and there is a `siloed` module
+that models one agent per channel, each with its own queue and its own slice of
+the budget, none aware of the others.
+
+### The honest numbers, after
+
+| component | measured |
+|---|---|
+| action selection from the taxonomy | **+520%** |
+| value-ordering the budget vs arrival order | **+18.5%** |
+| allocator vs siloed per-channel agents | **+1.0%** |
+| allocator vs an idealised pooled + ranked agent | **-1.3%** |
+
+Swept across budgets, the allocator's edge over siloed agents runs from +3.3% at
+a tight budget to **-2.1%** at a loose one. It is noise.
+
+The reason is in the data and I should have checked it before building: only
+**9.5% of customers** have cases in more than one channel, so the cross-agent
+collision this layer exists to prevent can barely occur. At a 600-contact budget
+it affects 13 of 458 contacted customers, and the contact cap prevents exactly
+**one** customer from being over-messaged.
+
+### What I did about it
+
+Reframed rather than re-tuned. The allocator is now documented as a **governance
+layer, not a revenue layer**, and the ~0 is reported in the CLI output and pinned
+in a test that fails if it ever silently becomes a win.
+
+The revenue comes from action selection and value ordering, both of which a
+simple per-case policy can do. What the governance layer buys, for about 1%:
+
+- a hard ceiling on how much of one customer's patience a merchant may spend,
+  enforced across every channel at once -- which no per-channel agent can promise,
+  because none of them can see the others
+- suppression where no customer action can help
+- quiet hours
+- a decision-level audit trail: why each case was acted on or left alone, which
+  rule fired, what was predicted
+
+For a payments company that is the difference between an automation that survives
+a compliance review and one that does not. It is worth saying as governance
+rather than dressing it up as revenue.
+
+There is one caveat I am leaving open rather than acting on. My generator samples
+customers uniformly, so only 17% have more than one case in ninety days. Real
+merchant traffic is heavy-tailed and cross-channel overlap would be higher, which
+would make the collision guard bind harder. That is arguably a realism bug rather
+than a thesis convenience -- but changing the data after seeing the result is
+exactly the move that should not be made quietly, so it is recorded here and not
+made.
+
+### The pattern, seventh review
+
+The bug that mattered was not in the allocator. It was in the thing I was
+measuring the allocator *against*, and it was wrong in the direction that
+flattered me. Every previous review found defects in the system under test; this
+one found that the test itself was rigged, unintentionally, by me.
+
+Worth generalising: when a result is good, the first thing to audit is the
+control, not the treatment.
+
+---

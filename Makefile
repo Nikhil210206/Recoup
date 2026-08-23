@@ -1,4 +1,4 @@
-.PHONY: help venv install db db-down api data data-worlds assumptions arms arms-worlds classifier-eval ollama model test test-all lint fmt clean
+.PHONY: help venv install db db-down api data data-worlds assumptions arms arms-worlds classifier-eval ollama model allocate test test-all lint fmt clean
 
 PY := backend/.venv/bin/python
 PIP := backend/.venv/bin/pip
@@ -17,6 +17,7 @@ help:
 	@echo "  make ollama     start the local model runtime (free, no API key)"
 	@echo "  make classifier-eval  measure the LLM tail on held-out error codes"
 	@echo "  make model      train + calibrate the uplift model, run the lever study"
+	@echo "  make allocate   run the allocator bake-off at equal contact budgets"
 	@echo "  make test       unit tests (no database needed)"
 	@echo "  make test-all   unit + integration tests (needs make db)"
 	@echo "  make lint       ruff check"
@@ -70,6 +71,9 @@ classifier-eval:
 
 model:
 	cd backend && .venv/bin/python -m app.model.train --world $(or $(WORLD),base) --seed $(or $(SEED),42) --save
+
+allocate:
+	cd backend && .venv/bin/python -m app.allocator.cli --world $(or $(WORLD),base) --budget $(or $(BUDGET),600)
 
 test:
 	cd backend && .venv/bin/pytest
