@@ -29,6 +29,26 @@ from app.simulation.outcomes import (
 )
 
 
+def observable_cause(case) -> str | None:
+    """The cause a live system could determine, without ground truth.
+
+    Two sources, both observable:
+
+    - Razorpay's error fields, via the deterministic table.
+    - The loss channel itself. An abandoned checkout has no error code because
+      nothing failed -- the customer left. Its cause follows from the channel by
+      definition, so reading it is not reading the answer key.
+
+    Returns None for the unmapped tail, which is the signal to escalate rather
+    than guess.
+    """
+    if str(case.get("channel") or "") == "abandoned_checkout":
+        return A.ABANDONED_CHECKOUT_CAUSE
+    return taxonomy.classify(
+        case.get("error_reason"), case.get("error_source"), case.get("error_step")
+    ).cause
+
+
 class DoNothing:
     """B0. The floor. Whatever this recovers, the merchant gets for free."""
 
@@ -107,15 +127,22 @@ class CauseAware:
         # this arm unbeatable for a reason that has nothing to do with policy,
         # and any reviewer grepping for `latent_` in a policy would be right to
         # throw out every number in the evaluation.
-        classified = taxonomy.classify(
-            case.get("error_reason"), case.get("error_source"), case.get("error_step")
-        )
-        if classified.cause is None:
+        cause_key = observable_cause(case)
+        if cause_key is None:
             return None  # unmapped tail: hand to the exception list, do not guess
 
-        cause = taxonomy.get(classified.cause)
+        cause = taxonomy.get(cause_key)
         # `best_delay_h` is a published constant per cause, not a per-case latent.
-        delay = max(A.RECOVERABILITY[classified.cause].best_delay_h, 0.05)
+        delay = max(A.RECOVERABILITY[cause_key].best_delay_h, 0.05)
+
+        # The channel overrides the cause's retry policy where they disagree.
+        # `customer_abandoned` is normally retryable -- a cancelled payment can be
+        # re-attempted. But on an abandoned checkout there is no payment to
+        # re-attempt at all, so a retry is guaranteed to do nothing. Acting on the
+        # cause alone left this entire channel unrecovered while spending zero
+        # contacts and looking, in the totals, like a frugal policy.
+        if str(case.get("channel") or "") == "abandoned_checkout":
+            return (ActionType.PAYMENT_LINK_WHATSAPP, delay) if cause.contact_ok else None
 
         # Nothing the customer can do fixes a merchant setting, and a risk block
         # must not be worked around. Both suppress contact entirely.

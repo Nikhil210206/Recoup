@@ -310,3 +310,369 @@ asking, of each number: what would this look like if it were wrong, and is that
 distinguishable from what I am seeing?
 
 ---
+
+## 2026-08-25 — Day 4
+
+### The cheap model was not just less accurate, it was confidently wrong
+
+Not a bug in the code — a finding that changed a design decision, which is the
+reason I ran the measurement rather than picking a model by preference.
+
+No Anthropic API key (no budget for one), so the tail runs on a local model via
+Ollama. The obvious choice was the smallest thing that fits: llama3.2:3b, 2GB,
+fast. Before defaulting to it I held out eight error codes that *are* in the
+deterministic table, hid them from the lookup, and forced them down the LLM path,
+which gives real ground truth for exactly the operation the tail performs.
+
+| model | correct | confidently wrong | ms/call |
+|---|---|---|---|
+| llama3.2:3b | 4/7 | **3** | 3,870 |
+| qwen2.5:7b | 8/8 | 0 | 7,364 |
+
+The accuracy gap is not the interesting part. **All three of the 3B model's
+errors came at 0.90 confidence** — above the 0.70 acting threshold — so the
+confidence gate cannot catch them. A model that abstains when unsure is safe at
+any accuracy; a model that is wrong at 0.90 is not.
+
+The worst of the three: it classified `payment_risk_check_failed` as
+`hard_decline`. Those two causes have opposite recovery semantics. `risk_blocked`
+means never retry, this is a fraud control. `hard_decline` means try a different
+instrument. The 3B model would have had the system politely work around a fraud
+block, at high confidence, with a clean audit trail saying it was sure.
+
+Default is now qwen2.5:7b. The extra 2.7GB and ~3.5s of latency buy the
+difference between a tail that degrades safely and one that fails dangerously.
+That is the entire justification, and it is a number rather than a preference.
+
+**And then the 7B model failed the same way, which changed the architecture.**
+
+The integration test I wrote to pin the fix promptly failed. qwen2.5:7b
+classified an error code reading `issuer_fraud_suspicion_2027` — description:
+"The issuer declined the transaction as suspected fraud" — as `hard_decline` at
+0.95 confidence. Reproducibly, at temperature 0. It got four other phrasings of
+the identical case right; it appears to anchor on the token "issuer" in the code
+name over the description.
+
+So the 8/8 result was optimistic in exactly the way I had already flagged in the
+harness docstring, and here was the evidence.
+
+The response is not a better prompt. A probabilistic component is fine for
+mapping an unfamiliar code onto a taxonomy; it is not fine as the only thing
+between a fraud block and an automated retry. There is now a **deterministic
+guardrail applied after the model and not overridable by it**: if the input
+carries a risk or fraud signal, the model may not return a cause that permits
+retrying or contacting. The case goes to a human.
+
+Escalating a genuine hard decline costs one review. Retrying a fraud block costs
+more than that. Verified: the failing phrasing now escalates, correctly-classified
+fraud cases still pass through as `risk_blocked`, and ordinary declines with no
+risk signal are untouched — the guardrail is not a blanket refusal to classify.
+
+**The test was also wrong.** It asserted a specific model output, which is flaky
+by construction and makes a probabilistic component look more reliable than it
+is. It now asserts the safety property — *no fraud case is ever marked
+retryable* — which is what actually matters and is guaranteed by code rather than
+by the model behaving.
+
+**Why this is the right shape of answer even though it is a local model.**
+Claude remains the documented production path and the aligned one — Razorpay's
+Agent Studio is built on the Claude Agent SDK, and the Anthropic provider is
+implemented and used automatically whenever a key is present. But the tail is
+closed-set classification over fifteen labels on roughly 1% of traffic. Whether
+that needs a frontier model is a question to answer with a measurement. If the
+small models had failed the safety check, the honest conclusion would have been
+that the tail needs one and the cost is justified.
+
+### Everything else that was checked
+
+- Repeat unknown codes hit a cache: the tail costs money per *code*, not per
+  payment. A new Razorpay code appears across thousands of payments.
+- Backend outage degrades to the exception list rather than raising. Verified by
+  monkeypatching the provider to fail. Payment ingestion keeps working.
+- A model returning a label outside the enum is treated as an abstention, not a
+  cause. The schema is the containment, not the prompt — so even a fully
+  successful prompt injection through `error_description` can at worst produce a
+  wrong cause, which the confidence gate then routes to a human.
+
+---
+
+### Day 4 audit: a 31-second model call inside a webhook handler
+
+Five defects. The first was the worst thing found in the project so far, and it
+would only have shown up in production.
+
+**1. The classifier ran synchronously inside the webhook request.**
+
+`ingest.diagnose` called the full three-tier classifier, LLM tail included, while
+Razorpay waited for a response. Measured cold-path latency: **31 seconds.**
+
+The failure this produces is not a slow endpoint. It is: delivery times out ->
+Razorpay retries -> our own idempotency correctly rejects the duplicate as
+already-seen -> **the case is never classified at all**, while Razorpay records
+repeated delivery failures against the webhook. Two mechanisms that are each
+individually correct combine into silent data loss. Nothing errors. The case just
+sits at `open` forever.
+
+Fixed by splitting diagnosis. The deterministic tier runs inline at ~0.01 ms and
+resolves every published Razorpay code. Anything it cannot resolve is parked in
+`PENDING_DIAGNOSIS` and drained by `POST /tasks/classify-pending`, which runs
+outside the request. Webhook latency went from 31,000 ms to 10-61 ms, verified
+end to end against the running server.
+
+Deliberately a status column and a tick endpoint rather than Celery or a broker.
+The work is a bounded scan over rows with a status, the state belongs in Postgres
+next to the audit trail, and a tick that can be run by hand with curl is one you
+can reason about at 2am.
+
+**2. The risk guardrail only covered the LLM path.** A published code carrying a
+fraud description — `card_declined` with "blocked due to suspected fraudulent
+activity" — resolved deterministically to `hard_decline` at confidence 1.0, with
+the guardrail never consulted. The tier I trusted most was the one with no
+safety net. Now applied to every tier.
+
+**3. The enum offered to the model was hand-listed.** Adding a cause to the
+taxonomy would silently stop offering it to the classifier — the model could
+never return it, and nothing would fail. Now derived from the taxonomy, with a
+test asserting they cannot drift.
+
+**4. The tail cache keyed on the error code but not the description.** The first
+description ever seen for a new code fixed the answer for every later payment
+carrying it — and the description is precisely what the model reads. Now part of
+the key, at a small cost in hit rate.
+
+**5. The cache was unbounded.** A slow memory leak in a long-running process.
+Now a bounded LRU.
+
+**The near-miss worth recording.** My first attempt to add `PENDING_DIAGNOSIS`
+silently did nothing: `ruff format` had reformatted the comments in that enum
+earlier, so my anchor text no longer matched and the edit was a no-op. It
+surfaced as a 500 at runtime rather than as a failed edit. Same shape as the
+day-0 conftest that was never written — an edit that reports success while
+changing nothing. I now verify the *state of the file* after any surgical edit,
+not the exit code of the thing that made it.
+
+---
+
+## 2026-08-25 — Gap review before Day 5
+
+Asked whether days 0-4 were "perfect". Ran a gap analysis against the plan
+rather than re-running the checks that already passed, and found something worse
+than a bug: **the core thesis was not expressible in the data.**
+
+### The dataset had one loss channel; the argument needs three
+
+Recoup's pitch is that Agent Studio's agents each optimise their own queue and
+nothing arbitrates between them under a shared contact budget — Subscription
+Recovery and Abandoned Cart both chasing the same customer in one week.
+
+`LossChannel` declared three channels. One adapter existed. The synthetic
+dataset had **no channel column at all**. So the contact-collision problem — the
+entire product gap — could not be measured, only asserted. The allocator due on
+day 7 would have had nothing to arbitrate between, and I would have discovered
+that while building it.
+
+Nothing was failing. 84 tests passed. The gap was in what the tests were *about*.
+
+**Closed:** `subscription.pending` / `subscription.halted` adapters (Razorpay's
+documented events), an abandoned-cart adapter routed by payload shape rather than
+a guessed event name (Razorpay documents the payload but not a stable event
+string), and a channel dimension in the generator.
+
+The channels now genuinely pull against each other, which is the point:
+
+| channel | retryable | recovery route |
+|---|---|---|
+| `failed_payment` | yes | retry, or contact |
+| `failed_subscription` | yes, **without contacting anyone** — a mandate exists | retry is nearly free |
+| `abandoned_checkout` | **no** — nothing failed, there is no payment to re-attempt | contact is the only route |
+
+A subscription failure can be recovered for zero contacts. An abandoned cart
+cannot be recovered any other way. Both compete for the same finite tolerance of
+one customer. That is a real trade-off, and it is now measurable.
+
+### Two bugs fell out of it immediately
+
+**`taxonomy.classify` crashed on a missing error field.** Abandoned checkouts
+carry no error code. A webhook represents that absence as `None`, a DataFrame
+represents it as `NaN`, and the second one reached `.strip()` and raised. The
+same classifier serves both paths, so it now coerces defensively.
+
+**The cause-aware policy left an entire channel unrecovered while looking
+frugal.** `customer_abandoned` carries `RetryPolicy.IMMEDIATE`, which is correct
+for a cancelled payment and wrong for an abandoned checkout where no payment
+exists. The policy retried, the retry could not work, and it recorded zero
+contacts and zero recovery for 792 cases and Rs 48.8 lakh at risk. In the totals
+that reads as an efficient policy rather than a broken one.
+
+The lesson is narrower than "test more": **a cause is not sufficient to choose an
+action.** The channel changes what the same cause means. The policy is now
+channel-aware and the case is pinned by a test.
+
+### An honest number moved in the wrong direction, and stays
+
+Cause-aware's contact efficiency was 8.5x contact-everything on single-channel
+data. With abandoned checkouts included it is 2.6x.
+
+That is not a regression. Part of the old margin came from a world where
+retrying was always an option, which is not the world merchants are in. The test
+threshold moved from 3x to 2x with the reason written into the test, rather than
+the number being quietly preserved.
+
+### Still open, deliberately
+
+- Multi-touch remains modelled optimistically (flagged day 3, unresolved).
+- The Anthropic provider is implemented but has never executed — no key.
+- `ARCHITECTURE.md` and `EVALUATION.md` are not written yet (due day 10-11).
+
+---
+
+## 2026-08-26 — Days 5-6
+
+### The project's headline claim was worth 1%, and I found out by testing it
+
+Not a bug. A wrong hypothesis, caught by measuring the thing I had assumed.
+
+The plan's first move was: **rank cases by expected value rather than by
+transaction amount.** Rs 10,000 at 90% beats Rs 50,000 at 5%. It is intuitive,
+it is the reason the uplift model exists, and it was going to be the opening
+beat of the pitch.
+
+Measured on the test slice with a fixed 360-contact budget:
+
+| lever | variant | realised | lift |
+|---|---|---|---|
+| action | fixed retry @ 24h | Rs 6.1L | — |
+| action | fixed link @ 24h | Rs 30.2L | +394% |
+| action | retry at cause-best time | Rs 20.3L | +231% |
+| action | **cause-aware action + timing** | **Rs 38.2L** | **+524%** |
+| ranking | amount ranked | Rs 38.2L | — |
+| ranking | **EV ranked, ORACLE uplift** | Rs 38.6L | **+1.0%** |
+
+**Ranking is worth one percent, and that is with perfect knowledge.** The oracle
+row matters: this is not "the model needs to improve". The ceiling is that low.
+
+The reason is arithmetic, not modelling. `corr(EV, amount) = 0.937`. Transaction
+amounts span roughly 5,000x; uplift spans about 5x. Multiplying a hugely-varying
+quantity by a mildly-varying one barely reorders it. I checked whether pooling
+four merchants with 50x different ticket sizes caused it — per-merchant the
+correlation is still 0.875 to 0.927. I checked whether suppression was the hidden
+value — only 28 of 2,400 cases have near-zero true uplift.
+
+**What is actually worth 500% is choosing the right verb.** The actions are not
+substitutes. An expired card responds to a method-switch prompt about twenty
+times better than to a retry, and no amount of clever case selection recovers
+from having chosen the wrong action. This was visible on day 3 in the
+per-cause action table; I had attributed the resulting efficiency gap to the
+wrong mechanism.
+
+Thesis repointed, with the user's agreement: **the right action at the right
+time, or none at all, under a shared contact budget.** EV stays in the system for
+the decision of *whether to act*, and the 1% figure is reported rather than
+buried. A negative result about your own headline, found and published before a
+panel finds it, is worth more than the claim would have been.
+
+### Calibration did not help either, and that is also reported
+
+Isotonic regression on the treated arm moved ECE from 0.028 to **0.032** — worse.
+A logistic model optimises log loss and is close to calibrated by construction;
+isotonic fitted on a few hundred rows adds variance without removing bias.
+
+Rather than apply it anyway and write "we calibrated the model", the fit now
+scores raw, isotonic and sigmoid on a slice used for nothing else and takes the
+best by Brier. The chosen method is recorded per arm. On this data the baseline
+arm picks sigmoid and the treated arm picks raw.
+
+The miscalibration experiment then produced its own surprise. I expected
+over-confidence to wreck the allocation. It does not — realised value moves by
+about 2% — for exactly the same reason ranking does not matter. What it wrecks is
+the **forecast**: an over-confident model claims Rs 49 lakh and delivers Rs 26
+lakh, a 90% overstatement, at identical ROC-AUC. That is not cosmetic. A merchant
+staffs and plans against the forecast, and a recovery product that habitually
+promises double what it delivers stops being trusted regardless of what it
+recovers.
+
+So calibration earns its place for forecasting and for the act/do-not-act
+decision, not for ordering a queue. Which is a narrower claim than the one this
+project started with, and a true one.
+
+### A Bayes ceiling, because a raw AUC is uninterpretable
+
+The treated model reaches ROC-AUC 0.629, which reads as weak. Reconstructing the
+true generating probability — including the timing kernel — gives a Bayes-optimal
+AUC of **0.665**. The outcome is a coin flip weighted by p; nothing can predict a
+coin flip. So the model captures about **78% of the signal that exists**.
+
+The first version of this ceiling dropped the timing term and produced a value of
+0.600 — which the model "beat" at 116%. Exceeding a Bayes ceiling is impossible,
+and that impossibility was the tell that the ceiling was wrong rather than the
+model exceptional. Worth recording: the check that caught it was noticing a
+number that could not exist, not a test failing.
+
+---
+
+### Day 5-6 audit: the evaluation was not reproducible while claiming to be
+
+Four defects. The first invalidated every number reported that day.
+
+**1. `hash()` is randomised per process, so each training run used different data.**
+
+`build_frames` derived each split's exploration seed as `seed + hash(split) % 1000`.
+Python randomises string hashing per process unless PYTHONHASHSEED is pinned, so
+the "seed 42" run was seeded differently every time. Four consecutive runs of the
+identical command produced held-out ROC-AUC of **0.588, 0.604, 0.606 and 0.629**,
+and the saved artifact recorded whichever happened to run last.
+
+Nothing failed. The harness printed its configuration, as I had made it do after
+day 4, and the configuration it printed was accurate — the seed really was 42.
+The seed simply was not the only source of randomness, and the one that mattered
+was invisible.
+
+This is the worst class of bug in this project because reproducibility is the
+claim that everything else rests on. `make eval` producing the same table twice
+is the reason a panel should believe any of it.
+
+Fixed with fixed per-split offsets. Three consecutive runs now produce
+byte-identical output.
+
+**2. Every sub-experiment hardcoded `("base", 42)`.** Running
+`--world pessimistic` trained on pessimistic data, then reported a Bayes ceiling
+and a lever study computed on *base* data. The world sweep — the thing that is
+supposed to test whether conclusions survive a different world — was silently
+comparing a pessimistic model against base-world conclusions.
+
+Fixed by threading world and seed through. The sweep now works, and it
+strengthens the day's finding rather than weakening it:
+
+| world | action selection | EV ranking (oracle) |
+|---|---|---|
+| pessimistic | +528.9% | +1.1% |
+| base | +524.1% | +1.0% |
+| optimistic | +519.4% | +0.9% |
+
+The conclusion that repointed the project holds in all three.
+
+**3. The Bayes ceiling joined two frames positionally without checking.** The
+case data and the training frame are produced by separate code paths and zipped
+by position. If their order diverged, every case would be scored against a
+different case's latent probability, and the result would be meaningless in a way
+that looks entirely normal. Now asserted on `case_id` before use.
+
+Fixing 1 and 3 together moved the headline: the model captures **88%** of the
+achievable signal, not 78%. The earlier figure was comparing a model trained on
+one random draw against a ceiling computed from another.
+
+**4. `arms.load` raised `SystemExit` on a missing file.** Fine for a CLI, hostile
+in a library — `SystemExit` escapes normal exception handling and tears down the
+caller. It surfaced as a test that appeared to fail for an unrelated reason. Now
+`FileNotFoundError`.
+
+**The pattern, sixth review running.** Every one of these was found by asking what
+a number would look like if it were wrong, and checking whether that was
+distinguishable from what I was seeing. Run it three times and compare. Ask
+whether the ceiling could be exceeded. Ask whether `--world pessimistic` actually
+changed anything downstream.
+
+None of the six adversarial passes has come back empty. I have stopped expecting
+one to.
+
+---

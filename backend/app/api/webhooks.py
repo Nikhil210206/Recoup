@@ -35,7 +35,23 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 HANDLERS = {
     "payment.failed": ingest.ingest_payment_failed,
     "payment.captured": ingest.resolve_recovery,
+    # A failed subscription charge, and the same subscription once Razorpay has
+    # exhausted its own retries.
+    "subscription.pending": ingest.ingest_subscription_failed,
+    "subscription.halted": ingest.ingest_subscription_failed,
 }
+
+#: Magic Checkout's abandoned-cart webhook has a documented payload but no
+#: documented event-name string, and integrations differ. Rather than guess a
+#: name, an unrecognised event carrying a cart payload is routed by shape.
+SHAPE_HANDLERS = [
+    (
+        lambda e: bool(
+            (e.get("payload", {}).get("cart") or e.get("payload", {})).get("cart_token")
+        ),
+        ingest.ingest_abandoned_checkout,
+    ),
+]
 
 
 @router.post("/razorpay", status_code=status.HTTP_200_OK)
@@ -83,6 +99,8 @@ async def receive(
 
     # 3. Dispatch.
     handler = HANDLERS.get(event_type)
+    if handler is None:
+        handler = next((h for matches, h in SHAPE_HANDLERS if matches(event)), None)
     if handler is None:
         delivery.result = "ignored_event_type"
         delivery.processed_at = datetime.now(UTC)

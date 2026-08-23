@@ -129,7 +129,10 @@ def load(world: str, seed: int) -> pd.DataFrame:
     name = f"cases.seed{seed}.parquet" if world == "base" else f"cases.seed{seed}.{world}.parquet"
     path = DATA_DIR / name
     if not path.exists():
-        raise SystemExit(f"missing {path}. Run: make data-worlds")
+        # A plain exception, not SystemExit. `load` is called from tests and
+        # from other modules; SystemExit escapes normal exception handling and
+        # tears down the caller, which is hostile behaviour for a library.
+        raise FileNotFoundError(f"missing {path}. Run: make data-worlds")
     return pd.read_parquet(path)
 
 

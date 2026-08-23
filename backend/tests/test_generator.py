@@ -88,12 +88,31 @@ class TestClassifierRoundTrip:
         """The single most important property here. The generator emits
         Razorpay's real error reasons, and the same deterministic map that
         classifies a live webhook must recover the cause exactly. If this drifts,
-        the classifier is being scored against a taxonomy built to flatter it."""
-        got = cases.apply(
+        the classifier is being scored against a taxonomy built to flatter it.
+
+        Restricted to channels that actually carry an error code. An abandoned
+        checkout has none -- nothing failed, the customer left -- so there is
+        nothing for the table to classify.
+        """
+        with_errors = cases[cases.error_reason.notna()]
+        assert len(with_errors) > 0
+        got = with_errors.apply(
             lambda r: taxonomy.classify(r.error_reason, r.error_source, r.error_step).cause,
             axis=1,
         )
-        assert (got == cases.latent_cause).all()
+        assert (got == with_errors.latent_cause).all()
+
+    def test_channels_without_an_error_code_are_still_classifiable(self, cases):
+        """The cause of an abandoned checkout follows from the channel, not from
+        an error field. A policy must be able to determine it without ground
+        truth, or that channel can never be acted on."""
+        from app.simulation.policies import observable_cause
+
+        abandoned = cases[cases.channel == "abandoned_checkout"]
+        assert len(abandoned) > 0
+        assert abandoned.error_reason.isna().all()
+        for _, row in abandoned.head(50).iterrows():
+            assert observable_cause(row) == row.latent_cause
 
 
 class TestLatentBoundary:

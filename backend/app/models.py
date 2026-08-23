@@ -73,6 +73,9 @@ class LossChannel(enum.StrEnum):
 
 class CaseStatus(enum.StrEnum):
     OPEN = "open"  # detected, not yet diagnosed
+    # Deterministic lookup did not resolve it; queued for the LLM tail. The tail
+    # cannot run inside the webhook request -- see services/ingest.py.
+    PENDING_DIAGNOSIS = "pending_diagnosis"
     DIAGNOSED = "diagnosed"  # cause assigned
     ALLOCATED = "allocated"  # allocator selected an action
     ACTED = "acted"  # action executed, awaiting outcome

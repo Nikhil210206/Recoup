@@ -173,6 +173,21 @@ def _pick_method(rng, merchant: MerchantProfile) -> str:
     return rng.choice(list(weights), p=list(weights.values()))
 
 
+def _pick_channel(rng, merchant: MerchantProfile) -> str:
+    """Which loss channel this attempt belongs to.
+
+    Subscriptions only exist for merchants that sell them; a grocery basket does
+    not have a mandate behind it.
+    """
+    weights = {c: p.value for c, p in A.CHANNEL_MIX.items()}
+    if merchant.category in ("grocery", "fashion"):
+        weights["failed_subscription"] *= 0.15
+    elif merchant.category == "education":
+        weights["failed_subscription"] *= 3.0
+    weights = _norm(weights)
+    return str(rng.choice(list(weights), p=list(weights.values())))
+
+
 def _pick_cause(rng, method: str) -> str:
     mix = A.CAUSE_MIX_BY_METHOD[method]
     return rng.choice(list(mix), p=list(mix.values()))
@@ -250,7 +265,7 @@ def generate(config: GeneratorConfig | None = None) -> dict[str, pd.DataFrame]:
     start_date = config.end_date - timedelta(days=config.days)
 
     # --- Phase 1: lay out every attempt ------------------------------------
-    attempts: list[tuple[datetime, int, int, str, int]] = []
+    attempts: list[tuple[datetime, int, int, str, int, str]] = []
     for day in range(config.days):
         day_start = start_date + timedelta(days=day)
         # Python weekday(): Monday=0 ... Sunday=6. The weekend is Saturday and
@@ -276,7 +291,8 @@ def generate(config: GeneratorConfig | None = None) -> dict[str, pd.DataFrame]:
                         50_000_000,
                     )
                 )
-                attempts.append((ts, m_idx, ci, method, amount))
+                channel = _pick_channel(rng, merchant)
+                attempts.append((ts, m_idx, ci, method, amount, channel))
 
     # --- Phase 2: walk in time order ---------------------------------------
     # Ties broken deterministically so a given seed always yields one ordering.
@@ -288,7 +304,7 @@ def generate(config: GeneratorConfig | None = None) -> dict[str, pd.DataFrame]:
     last_failure_at: dict[int, datetime] = {}
 
     rows: list[dict] = []
-    for ts, m_idx, ci, method, amount in attempts:
+    for ts, m_idx, ci, method, amount, channel in attempts:
         merchant = MERCHANTS[m_idx]
         issuer = str(pref_issuer[ci])
         hour = ts.hour
@@ -312,8 +328,15 @@ def generate(config: GeneratorConfig | None = None) -> dict[str, pd.DataFrame]:
         # --- failed: this becomes a case -----------------------------------
         # An active outage forces the cause toward bank downtime, producing a
         # correlated spike rather than uniform noise.
-        if outage > 0 and rng.random() < outage:
+        if channel == "abandoned_checkout":
+            # Nothing failed. The customer left, so there is no error code and
+            # no payment to retry -- only a contact can recover this.
+            cause = A.ABANDONED_CHECKOUT_CAUSE
+        elif outage > 0 and rng.random() < outage:
             cause = "transient_bank_downtime"
+        elif channel == "failed_subscription":
+            mix = A.SUBSCRIPTION_CAUSE_MIX
+            cause = str(rng.choice(list(mix), p=list(mix.values())))
         else:
             cause = _pick_cause(rng, method)
 
@@ -327,6 +350,14 @@ def generate(config: GeneratorConfig | None = None) -> dict[str, pd.DataFrame]:
             np.clip(rec.p_self_recover * scale * (0.6 + 0.8 * reliability[ci]), 0.0, 0.95)
         )
         p_retry = float(np.clip(rec.p_retry * scale, 0.0, 0.97))
+        if channel == "abandoned_checkout":
+            # There is no failed payment to re-attempt.
+            p_retry = 0.0
+        elif channel == "failed_subscription":
+            # A live mandate means the merchant can re-attempt the charge without
+            # the customer doing anything. This is why a subscription failure can
+            # be recovered for zero contacts, and an abandoned cart cannot.
+            p_retry = float(np.clip(p_retry * 1.25, 0.0, 0.97))
         p_nudge = float(np.clip(rec.p_nudge * scale * (0.5 + responsiveness[ci]), 0.0, 0.95))
 
         n_failures[ci] += 1
@@ -347,9 +378,13 @@ def generate(config: GeneratorConfig | None = None) -> dict[str, pd.DataFrame]:
                 "amount_paise": amount,
                 "method": method,
                 "issuer": issuer,
-                "error_reason": reason,
-                "error_source": source,
-                "error_step": step,
+                "channel": channel,
+                # An abandoned checkout carries no Razorpay error fields, because
+                # no payment was attempted. Anything consuming these must cope
+                # with their absence rather than assume a failure shape.
+                "error_reason": None if channel == "abandoned_checkout" else reason,
+                "error_source": None if channel == "abandoned_checkout" else source,
+                "error_step": None if channel == "abandoned_checkout" else step,
                 "hour_ist": hour,
                 "weekday": ts.weekday(),
                 "is_weekend": ts.weekday() in (5, 6),

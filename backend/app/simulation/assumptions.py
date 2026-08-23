@@ -147,6 +147,48 @@ CAUSE_MIX_BY_METHOD: dict[str, dict[str, float]] = {
 }
 
 # ---------------------------------------------------------------------------
+# Loss channels
+# ---------------------------------------------------------------------------
+# The allocator's whole premise is arbitrating *between* these under one shared
+# contact budget, so they have to differ in ways that actually pull against each
+# other:
+#
+#   failed_payment       a payment attempt failed. Retry is possible and cheap.
+#   failed_subscription  a mandate exists, so a retry needs no customer contact
+#                        at all -- recovery can cost zero contacts.
+#   abandoned_checkout   nothing failed; the customer left. There is no payment
+#                        to retry, so the ONLY route to the money is a contact.
+#
+# That asymmetry is the trade-off nothing in Agent Studio currently arbitrates:
+# subscription retries are nearly free, abandoned carts are contact-only, and
+# both compete for the same finite tolerance of one customer.
+
+CHANNEL_MIX: dict[str, Param] = {
+    "failed_payment": Param(0.62, Basis.ESTIMATE, "Highest volume for a typical D2C merchant."),
+    "abandoned_checkout": Param(
+        0.30, Basis.ESTIMATE, "Drop-off is high volume relative to payment failure."
+    ),
+    "failed_subscription": Param(0.08, Basis.ESTIMATE, "Only merchants running recurring plans."),
+}
+
+#: Abandoned checkouts carry no Razorpay error code -- nothing failed. The cause
+#: is structural, and `p_retry` is zero because there is no payment to re-attempt.
+ABANDONED_CHECKOUT_CAUSE = "customer_abandoned"
+
+#: Subscription charge failures skew to funds and instrument problems rather than
+#: authentication: no one is at a checkout typing an OTP, a mandate is firing.
+SUBSCRIPTION_CAUSE_MIX: dict[str, float] = {
+    "insufficient_funds": 0.38,
+    "card_expired": 0.16,
+    "hard_decline": 0.14,
+    "limit_exceeded": 0.10,
+    "transient_bank_downtime": 0.09,
+    "card_disabled_online": 0.06,
+    "card_blocked": 0.04,
+    "risk_blocked": 0.03,
+}
+
+# ---------------------------------------------------------------------------
 # Latent recoverability -- the counterfactual ground truth
 # ---------------------------------------------------------------------------
 # These are the parameters the agent never observes. They define, per cause:

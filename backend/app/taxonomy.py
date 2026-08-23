@@ -252,6 +252,21 @@ REASON_TO_CAUSE: dict[str, str] = {
 }
 
 
+def _as_text(value: object) -> str | None:
+    """Normalise a possibly-missing field to a string or None.
+
+    Webhooks omit fields; DataFrames represent the same absence as NaN. Both must
+    behave identically here, because the same classifier serves both paths.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, float) and value != value:  # NaN
+        return None
+    return str(value)
+
+
 @dataclass(frozen=True)
 class Classification:
     cause: str | None
@@ -272,6 +287,11 @@ def classify(
     LLM tail and, failing that, to the exception list. Guessing a cause here
     would be worse than admitting we do not know one.
     """
+    # Coerce defensively. A missing field arrives as None from a webhook and as
+    # NaN from a DataFrame, and both used to reach `.strip()` and raise.
+    error_reason = _as_text(error_reason)
+    error_source = _as_text(error_source)
+
     if error_reason:
         key = error_reason.strip().lower()
         cause = REASON_TO_CAUSE.get(key)

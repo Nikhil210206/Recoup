@@ -1,4 +1,4 @@
-.PHONY: help venv install db db-down api data data-worlds assumptions arms arms-worlds test test-all lint fmt clean
+.PHONY: help venv install db db-down api data data-worlds assumptions arms arms-worlds classifier-eval ollama model test test-all lint fmt clean
 
 PY := backend/.venv/bin/python
 PIP := backend/.venv/bin/pip
@@ -14,6 +14,9 @@ help:
 	@echo "  make assumptions regenerate data/ASSUMPTIONS.md from code"
 	@echo "  make arms       compare recovery arms on the test split"
 	@echo "  make arms-worlds compare arms across all three worlds"
+	@echo "  make ollama     start the local model runtime (free, no API key)"
+	@echo "  make classifier-eval  measure the LLM tail on held-out error codes"
+	@echo "  make model      train + calibrate the uplift model, run the lever study"
 	@echo "  make test       unit tests (no database needed)"
 	@echo "  make test-all   unit + integration tests (needs make db)"
 	@echo "  make lint       ruff check"
@@ -56,6 +59,17 @@ arms-worlds:
 	cd backend && for w in pessimistic base optimistic; do \
 		.venv/bin/python -m app.simulation.arms --world $$w --split test; echo; \
 	done
+
+ollama:
+	@pgrep -x ollama >/dev/null || (ollama serve > /tmp/ollama.log 2>&1 &)
+	@sleep 2 && ollama list
+
+classifier-eval:
+	cd backend && .venv/bin/python -m app.services.classifier_eval \
+		--models $(or $(MODELS),ollama:llama3.2:3b,ollama:qwen2.5:7b)
+
+model:
+	cd backend && .venv/bin/python -m app.model.train --world $(or $(WORLD),base) --seed $(or $(SEED),42) --save
 
 test:
 	cd backend && .venv/bin/pytest

@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import health, webhooks
+from app.api import health, tasks, webhooks
 from app.db import init_db
 
 
@@ -28,3 +28,4 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(webhooks.router)
+app.include_router(tasks.router)

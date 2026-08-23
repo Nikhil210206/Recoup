@@ -184,15 +184,24 @@ class TestArmComparison:
         for name, gross in results.items():
             assert gross >= floor, name
 
-    def test_cause_aware_is_far_more_contact_efficient(self, cases):
-        """The claim that survives every world: knowing the cause buys most of
-        the recovery for a small fraction of the customer contact."""
+    def test_cause_aware_is_more_contact_efficient(self, cases):
+        """Knowing the cause buys most of the recovery for a fraction of the
+        customer contact.
+
+        The threshold here was 3x when the dataset had one loss channel, and the
+        measured margin was 8.5x. Adding abandoned checkouts cut it to ~2.6x, and
+        that is the honest number rather than a regression: an abandoned checkout
+        has no payment to re-attempt, so the cause-aware policy must spend a
+        contact on a channel where it has no cheap option. Part of its former
+        edge came from a world where retrying was always available, which was a
+        less realistic world.
+        """
         eff = {}
         for pol in (ContactEverything(), CauseAware()):
             eps = [run_episode(r, pol) for _, r in cases.iterrows()]
             contacts = sum(e.contacts_used for e in eps)
             eff[pol.name] = sum(e.incremental_paise for e in eps) / max(contacts, 1)
-        assert eff["B4_cause_aware"] > eff["B2_contact_everything"] * 3
+        assert eff["B4_cause_aware"] > eff["B2_contact_everything"] * 2
 
 
 class TestGroundTruthBoundary:
