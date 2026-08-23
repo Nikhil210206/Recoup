@@ -178,3 +178,135 @@ evaluation harness will print its own configuration on every run rather than
 letting me assume it ran the way I intended.
 
 ---
+
+## 2026-08-24 — Days 2-3
+
+### Contact-everything was being scored as far less spammy than it is
+
+**Expected:** the maximal-intervention baseline would show a high unnecessary-
+contact rate — it messages everyone, and ~22% of those customers were going to
+pay anyway.
+
+**Actually:** it reported **zero** unnecessary contacts across 2,383 cases.
+
+**Why:** `simulate_action` resolved a *pending* self-recovery inside the failed-
+action branch. If an early retry failed while the customer was going to pay on
+their own three days later, the function returned `recovered=True`, the episode
+runner saw a recovery and terminated, and every remaining contact in the policy's
+ladder never fired. 377 of 2,383 episodes ended this way.
+
+The effect was one-directional and flattering to the wrong arm: contact-
+everything looked cheaper (3,424 contacts instead of 4,031), incurred less cost,
+and appeared to spam nobody — while its recovery numbers were untouched, because
+those cases recovered either way. A comparison that undercounts one arm's costs
+while leaving its revenue intact is worse than no comparison.
+
+**Fix:** `simulate_action` now reports only what that action did. The episode
+runner owns the timeline and applies any self-recovery after the policy has
+finished acting. Unnecessary contacts went 0 → 607 (15% of contacts), and the
+cost side finally reflects reality.
+
+**What it changed about the conclusions.** With costs counted properly, running
+the arms across all three worlds showed the ranking is *not* stable: in the
+pessimistic world, cause-aware recovers more incremental revenue than contact-
+everything (24.7% vs 23.5%) using 388 contacts instead of 4,997. That flip is a
+real finding and I would have missed it entirely — the bug was hiding the cost
+axis on which the flip happens.
+
+It also moved the headline metric. Raw incremental revenue rewards contacting
+everyone. Incremental rupees *per contact* does not, and it separates the arms by
+almost 9x (Rs 13,260 vs Rs 1,532). That is now the primary number.
+
+---
+
+### Stated limitation: multi-touch is probably modelled optimistically
+
+Not a bug, but worth recording before it becomes an embarrassment in a panel.
+
+Repeated contact attempts draw independently, with only contact fatigue (λ)
+coupling them. Real customers who ignore two messages are systematically
+different from customers who have not been messaged yet — unresponsiveness
+persists in ways a per-attempt decay does not fully capture. The consequence is
+that long escalation ladders look better here than they would in production.
+
+Concretely: contact-everything reaches 39.8% incremental in the base world,
+against Razorpay's published "up to 20%" for their own multichannel recovery
+product. Some of that gap is that the published figure is a single product on
+real traffic and this is a four-step ladder in a simulator, but I do not think
+all of it is.
+
+This is why the fatigue parameter is swept rather than trusted (0.40 / 0.55 /
+0.75), and why the efficiency metric matters more than the gross one: every
+mechanism I am unsure about inflates the arms that contact more, so the arm that
+wins on rupees-per-contact is the conclusion I would defend.
+
+---
+
+### Day 2-3 audit: a policy was reading the answer key
+
+Second adversarial pass, this time on the simulator. Four defects, and the first
+would have invalidated an entire arm.
+
+**1. `CauseAware` read `latent_cause` and `latent_best_delay_h` directly.**
+
+I had written, in the module docstring of the generator, that nothing outside the
+outcome simulator may read a `latent_` field. Then I wrote a policy that reads
+two of them. It is the first thing a reviewer would grep for, and finding it
+would justify discarding every number in the evaluation — not just that arm's.
+
+The irony is that it was not even necessary. The cause is recoverable from
+Razorpay's own error fields at 100% accuracy (that round-trip is already a test),
+and `best_delay_h` is a published per-cause constant, not a per-case secret. The
+policy now classifies from `error_reason` / `error_source` / `error_step` like a
+live system would, and refuses to act at all on an unmapped reason rather than
+guessing.
+
+Fixed structurally as well as literally: a test now walks the AST of
+`policies.py` and fails if any class not explicitly marked
+`reads_ground_truth = True` contains a `latent_*` string literal. Verified by
+injecting a cheating policy and confirming the guard fires.
+
+**2. Contacts were charged for messages sent to customers who had already paid.**
+
+6.4% of all charged contacts were messages to someone whose payment had already
+landed. No real recovery system sends those — it reads payment status first and
+stops the workflow. Charging for them penalised contact-heavy arms for messages
+they would never actually send.
+
+Note the direction: this biased the comparison the *opposite* way from the
+day-2 bug. One was inflating the cost side, the other suppressing it. Both were
+invisible in the totals.
+
+Also separated two things I had conflated. An *unnecessary contact* is reaching
+someone who was going to pay anyway, at a moment when that was unknowable — a
+genuine policy cost. Messaging someone who has already paid is a status-checking
+bug, not a policy decision. Only the first belongs in the metric.
+
+**3. The "oracle ceiling" was not a ceiling.** I added an upper-bound arm to make
+"% of recoverable revenue captured" meaningful, and a four-step baseline promptly
+scored 126% of it — because the oracle was single-shot. A ceiling that the arms
+exceed is worse than no ceiling: it silently converts a headroom statement into
+nonsense. It now runs under the same four-action budget, and a test asserts no
+arm can exceed it.
+
+**4. Win/loss counts were misleading.** The paired comparison reported
+contact-everything as "worse than T+3 on 54% of cases", which reads as a
+damning result. Decomposing it: 89% of those losses were under Rs 30 — it paid
+for a message on a case T+3 recovered for free. Genuine losses were 141 cases,
+not 1,282. Differences below the cost of a couple of contacts are now reported as
+immaterial rather than as defeats: **materially better on 35%, worse on 6%,
+within Rs 30 on 59%.**
+
+**What I added because the audit showed it was missing.** Common random numbers
+make arm comparisons paired, which is a much stronger statistical position than I
+was actually using — I was reporting differences with no evidence they were not
+noise. There is now a paired bootstrap with 95% intervals on every headline
+comparison.
+
+**Pattern, fourth consecutive review.** Every defect so far has been found by
+interrogating the *shape* of an output against intent, never by a test failing.
+The four here were sitting behind 46 passing tests. What is actually working is
+asking, of each number: what would this look like if it were wrong, and is that
+distinguishable from what I am seeing?
+
+---

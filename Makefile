@@ -1,4 +1,4 @@
-.PHONY: help venv install db db-down api data data-worlds assumptions test test-all lint fmt clean
+.PHONY: help venv install db db-down api data data-worlds assumptions arms arms-worlds test test-all lint fmt clean
 
 PY := backend/.venv/bin/python
 PIP := backend/.venv/bin/pip
@@ -12,6 +12,8 @@ help:
 	@echo "  make data       generate the synthetic dataset (seed 42, base world)"
 	@echo "  make data-worlds generate all three world parameterisations"
 	@echo "  make assumptions regenerate data/ASSUMPTIONS.md from code"
+	@echo "  make arms       compare recovery arms on the test split"
+	@echo "  make arms-worlds compare arms across all three worlds"
 	@echo "  make test       unit tests (no database needed)"
 	@echo "  make test-all   unit + integration tests (needs make db)"
 	@echo "  make lint       ruff check"
@@ -46,6 +48,14 @@ data-worlds:
 
 assumptions:
 	cd backend && .venv/bin/python -m app.simulation.docgen
+
+arms:
+	cd backend && .venv/bin/python -m app.simulation.arms --world $(or $(WORLD),base) --split $(or $(SPLIT),test)
+
+arms-worlds:
+	cd backend && for w in pessimistic base optimistic; do \
+		.venv/bin/python -m app.simulation.arms --world $$w --split test; echo; \
+	done
 
 test:
 	cd backend && .venv/bin/pytest
