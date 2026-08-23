@@ -32,8 +32,7 @@ def _ensure_test_database() -> None:
     import psycopg
 
     admin_dsn = (
-        _DEV_URL.replace("postgresql+psycopg://", "postgresql://").rsplit("/", 1)[0]
-        + "/postgres"
+        _DEV_URL.replace("postgresql+psycopg://", "postgresql://").rsplit("/", 1)[0] + "/postgres"
     )
     with psycopg.connect(admin_dsn, autocommit=True) as conn:
         exists = conn.execute(

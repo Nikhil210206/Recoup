@@ -1,4 +1,4 @@
-.PHONY: help venv install db db-down api test test-all lint fmt clean
+.PHONY: help venv install db db-down api data data-worlds assumptions test test-all lint fmt clean
 
 PY := backend/.venv/bin/python
 PIP := backend/.venv/bin/pip
@@ -9,6 +9,9 @@ help:
 	@echo "  make install    create venv and install backend deps"
 	@echo "  make db         start Postgres (docker compose)"
 	@echo "  make api        run the FastAPI server on :8000"
+	@echo "  make data       generate the synthetic dataset (seed 42, base world)"
+	@echo "  make data-worlds generate all three world parameterisations"
+	@echo "  make assumptions regenerate data/ASSUMPTIONS.md from code"
 	@echo "  make test       unit tests (no database needed)"
 	@echo "  make test-all   unit + integration tests (needs make db)"
 	@echo "  make lint       ruff check"
@@ -32,6 +35,17 @@ db-down:
 
 api:
 	cd backend && .venv/bin/uvicorn app.main:app --reload --port 8000
+
+data:
+	cd backend && .venv/bin/python -m app.simulation.cli --seed $(or $(SEED),42) --world base
+
+data-worlds:
+	cd backend && for w in base pessimistic optimistic; do \
+		.venv/bin/python -m app.simulation.cli --seed $(or $(SEED),42) --world $$w; \
+	done
+
+assumptions:
+	cd backend && .venv/bin/python -m app.simulation.docgen
 
 test:
 	cd backend && .venv/bin/pytest
