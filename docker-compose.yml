@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: recoup-db
+    environment:
+      POSTGRES_USER: recoup
+      POSTGRES_PASSWORD: recoup
+      POSTGRES_DB: recoup
+    ports:
+      # Host port is configurable: 5432 and 5433 are commonly taken by other
+      # local projects. Override with RECOUP_DB_PORT in .env if 5434 clashes too.
+      - "${RECOUP_DB_PORT:-5434}:5432"
+    volumes:
+      - recoup_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recoup -d recoup"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  recoup_pgdata:

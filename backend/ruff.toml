@@ -1,0 +1,12 @@
+target-version = "py313"
+line-length = 100
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "BLE"]
+ignore = [
+    # Depends()/Header() in argument defaults is the FastAPI idiom, not a bug.
+    "B008",
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["S101"]
