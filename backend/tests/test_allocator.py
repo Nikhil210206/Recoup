@@ -79,16 +79,34 @@ class TestBudgetArithmetic:
 
 
 class TestSafetyGates:
-    def test_futile_causes_are_never_acted_on(self, plan, cases):
-        """A fraud block and a merchant-configuration failure cannot be cleared
-        by anything the customer does, so every customer-facing action has
-        expected value zero and non-zero cost."""
+    def test_a_fraud_block_is_never_acted_on(self, plan, cases):
+        """There is no correct action. Working around a fraud control is not a
+        recovery, whatever it would be worth."""
         decisions, _ = plan
         by_case = {d.case_id: d for d in decisions}
-        futile = cases[cases.latent_cause.isin(["risk_blocked", "merchant_config"])]
-        assert len(futile) > 0
-        for case_id in futile.case_id:
+        blocked = cases[cases.latent_cause == "risk_blocked"]
+        assert len(blocked) > 0
+        for case_id in blocked.case_id:
             assert not by_case[str(case_id)].acted
+
+    def test_a_merchant_misconfiguration_alerts_the_merchant_and_nobody_else(
+        self, plan, cases
+    ):
+        """No customer action can clear a merchant setting -- but there is still a
+        correct output, and it is not silence. The rule was called
+        `merchant_alert_only` while emitting no alert at all, which threw away the
+        one recoverable thing about the case.
+        """
+        decisions, _ = plan
+        by_case = {d.case_id: d for d in decisions}
+        misconfigured = cases[cases.latent_cause == "merchant_config"]
+        assert len(misconfigured) > 0
+        for case_id in misconfigured.case_id:
+            decision = by_case[str(case_id)]
+            assert decision.action == ActionType.MERCHANT_ALERT
+            # Goes to the merchant, so it spends none of the customer's patience.
+            assert not decision.uses_contact
+            assert decision.cost_paise == 0
 
     def test_no_contact_where_the_taxonomy_forbids_it(self, plan, cases):
         """Messaging a customer about their bank's downtime blames them for an

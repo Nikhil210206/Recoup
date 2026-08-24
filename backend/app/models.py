@@ -96,10 +96,11 @@ class CauseMethod(enum.StrEnum):
 
 class ActionStatus(enum.StrEnum):
     PROPOSED = "proposed"
-    BLOCKED = "blocked"  # policy engine refused it
-    PENDING_APPROVAL = "pending_approval"
+    BLOCKED = "blocked"  # the policy engine refused it
+    PENDING_APPROVAL = "pending_approval"  # waiting on a human
+    REJECTED = "rejected"  # a human refused it
     EXECUTED = "executed"
-    FAILED = "failed"
+    FAILED = "failed"  # execution was attempted and errored
 
 
 class Case(Base):
@@ -141,6 +142,12 @@ class Case(Base):
     cause: Mapped[str | None] = mapped_column(String(64), index=True)
     cause_confidence: Mapped[float | None] = mapped_column()
     cause_method: Mapped[CauseMethod | None] = mapped_column(pg_enum(CauseMethod))
+
+    # Needed to execute a recovery action. Stored on the case because that is
+    # the unit an action is taken against, and because a payment link has to be
+    # addressed to somebody.
+    customer_contact: Mapped[str | None] = mapped_column(String(32))
+    customer_email: Mapped[str | None] = mapped_column(String(160))
 
     payment_method: Mapped[str | None] = mapped_column(String(32))  # upi|card|netbanking|wallet
     issuer: Mapped[str | None] = mapped_column(String(64))
@@ -245,6 +252,16 @@ class Action(Base):
     cost_paise: Mapped[int | None] = mapped_column(BigInteger)
 
     blocked_reason: Mapped[str | None] = mapped_column(String(128))
+
+    #: Why this action needed a human, and what they decided. Populated only for
+    #: actions that entered the approval queue.
+    approval_reason: Mapped[str | None] = mapped_column(String(128))
+    approved_by: Mapped[str | None] = mapped_column(String(64))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: The rule that authorised or refused this action, copied from the
+    #: allocator's decision so the action row is self-describing in an audit.
+    decided_by_rule: Mapped[str | None] = mapped_column(String(64))
     external_ref: Mapped[str | None] = mapped_column(String(64))  # e.g. payment link id
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

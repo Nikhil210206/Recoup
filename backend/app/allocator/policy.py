@@ -131,6 +131,14 @@ def preferred_action(row, cause: taxonomy.Cause) -> ActionType | None:
     channel = str(row.get("channel") or "")
 
     if cause.retry_policy == taxonomy.RetryPolicy.NEVER:
+        # A merchant-configuration failure has a correct action -- it is just not
+        # a customer-facing one. Telling the merchant that international cards
+        # are disabled is the whole recoverable value here, and the rule was
+        # named `merchant_alert_only` while emitting no alert at all.
+        if cause.who_can_fix == taxonomy.WhoCanFix.MERCHANT:
+            return ActionType.MERCHANT_ALERT
+        # A risk block is different: there is no correct action. Working around a
+        # fraud control is not a recovery.
         return None
 
     # No payment exists to re-attempt, so the only route is the customer.
@@ -240,7 +248,16 @@ class Allocator:
             row = cases.iloc[i]
             cause = taxonomy.get(cause_key)
             chosen = preferred_action(row, cause)
-            if chosen is not None and chosen not in _feasible_actions(row, cause):
+            # The feasibility filter covers customer-facing actions only. A
+            # merchant alert is not one of them -- it goes to the merchant, costs
+            # no contact, and is the correct output for a misconfiguration -- so
+            # filtering it against the customer-action list silently discarded it
+            # and the case fell through to the fraud-suppression branch.
+            if (
+                chosen is not None
+                and chosen != ActionType.MERCHANT_ALERT
+                and chosen not in _feasible_actions(row, cause)
+            ):
                 chosen = None
             actions.append(chosen)
             delays[i] = max(A.RECOVERABILITY[cause_key].best_delay_h, 0.05)
@@ -289,15 +306,16 @@ class Allocator:
 
         cause = taxonomy.get(d.cause)
         if cause.retry_policy == taxonomy.RetryPolicy.NEVER:
-            # A fraud block, or the merchant's own configuration. No customer
-            # action clears either, so every customer-facing option has expected
-            # value zero and non-zero cost.
-            rule = (
-                "merchant_alert_only"
-                if cause.who_can_fix == taxonomy.WhoCanFix.MERCHANT
-                else "risk_suppression"
+            # No customer action clears either of these, so every customer-facing
+            # option has expected value zero and non-zero cost. But a merchant
+            # misconfiguration still has a correct output: tell the merchant.
+            if d.action == ActionType.MERCHANT_ALERT:
+                d.reason = f"cause_{d.cause}_is_the_merchants_to_fix"
+                d.rule = "merchant_alert_only"
+                return d
+            return self._suppress(
+                d, ledger, f"cause_{d.cause}_is_not_recoverable", "risk_suppression"
             )
-            return self._suppress(d, ledger, f"cause_{d.cause}_is_not_recoverable", rule)
 
         if d.action is None:
             return self._suppress(d, ledger, "no_feasible_action", "feasibility")
@@ -329,13 +347,14 @@ class Allocator:
         if not allowed:
             return self._suppress(d, ledger, why, "contact_budget")
 
-        send_hour = (now + timedelta(hours=d.delay_h)).hour
-        if self.budget_policy.in_quiet_hours(send_hour):
+        send_at = now + timedelta(hours=d.delay_h)
+        if self.budget_policy.is_quiet_at(send_at):
             # Deferred, not dropped. The case is still worth recovering; 3am is
             # simply not the moment to ask.
-            shift = (self.budget_policy.next_allowed_hour(send_hour) - send_hour) % 24
-            d.delay_h += shift
-            d.reason = f"deferred_{shift}h_out_of_quiet_hours"
+            allowed_at = self.budget_policy.next_allowed_time(send_at)
+            shift_h = (allowed_at - send_at).total_seconds() / 3600.0
+            d.delay_h += shift_h
+            d.reason = f"deferred_{shift_h:.1f}h_out_of_quiet_hours_ist"
             d.rule = "quiet_hours"
         else:
             d.reason = why

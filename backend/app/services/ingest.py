@@ -90,6 +90,8 @@ def ingest_payment_failed(db: Session, event: dict[str, Any]) -> Case | None:
         error_description=payment.get("error_description"),
         payment_method=payment.get("method"),
         issuer=payment.get("bank") or payment.get("wallet"),
+        customer_contact=payment.get("contact"),
+        customer_email=payment.get("email"),
     )
     db.add(case)
     db.flush()
@@ -335,6 +337,8 @@ def ingest_abandoned_checkout(db: Session, event: dict[str, Any]) -> Case | None
         customer_id=str(
             customer.get("id") or cart.get("phone") or cart.get("email") or f"cart:{token}"
         ),
+        customer_contact=cart.get("phone"),
+        customer_email=cart.get("email"),
         amount_paise=int(total),
         currency=str(cart.get("currency") or "INR"),
         detected_at=_ts(event.get("created_at")),

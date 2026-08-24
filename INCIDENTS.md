@@ -856,3 +856,191 @@ Worth generalising: when a result is good, the first thing to audit is the
 control, not the treatment.
 
 ---
+
+## 2026-08-24 — Day 8
+
+### The two halves of the project had never met
+
+Day 8 was meant to add the policy engine, stopping rules, idempotency and the
+approval queue. Mapping the plan against the code first turned up something
+larger: **the allocator had never touched the database.**
+
+It planned over parquet files. The ingestion path was live and tested; the
+decision path was measured and reproducible; there was no code between them. The
+`actions` table had existed since day 0, complete with a documented idempotency
+key and a unique constraint, and not one row had ever been written to it. The
+`build_idempotency_key` helper had never been called.
+
+That is the gap worth naming: a project can have a well-tested front half and a
+well-measured back half and still not be a system.
+
+### The bug that would have sent three payment links
+
+With the live path wired, allocation ran five times against the same five cases.
+Executed actions were correctly idempotent. But a case sitting in the approval
+queue produced a **new action on every pass**, and after three passes the same
+Rs 99,000 case appeared in the reviewer's queue three times.
+
+Idempotency is keyed on `(case_id, action_type, attempt_no)` and each pass
+increments the attempt, so every proposal got a fresh key and the duplicate check
+never fired. The constraint was working exactly as designed and protecting
+nothing, because **what was repeating was the decision, not the attempt.**
+
+A reviewer approving all three would have sent three payment links to one
+customer for one failed payment.
+
+Fixed with a stopping rule: a case with an action already `PENDING_APPROVAL` or
+`PROPOSED` is not re-planned. Five passes now produce one queued action, and the
+regression is pinned.
+
+### Two smaller ones, from reading the audit trail
+
+**An executed case stayed `DIAGNOSED`.** The approval endpoint executed the
+action but never advanced the case, so an executed case was indistinguishable
+from an unworked one in every status query -- including the dashboard's.
+
+**The ledger was being spammed.** Every allocation pass wrote a `case.stopped`
+row saying "still awaiting approval". A case in the queue for a day with a
+five-minute tick would accumulate hundreds of identical rows and bury the events
+that mattered. An append-only ledger is only useful if what gets appended is a
+*change*, so a stop is now recorded only when it is not already the latest event.
+
+Both were found by reading a single case's history end to end rather than by any
+test failing. That query -- "show me everything that happened to this case and
+why" -- has now found bugs on three separate days, and is the one I would expect
+in a review.
+
+### Deliberate choices worth recording
+
+**`live=False` everywhere by default.** Actions are recorded without calling
+Razorpay unless explicitly asked. An allocation endpoint that creates real
+payment links every time it is hit is one nobody can safely run twice, and a test
+suite that does it is one that eventually messages a stranger.
+
+**Notifications are disabled even when live.** Recoup decides *whether* to
+contact someone; it does not get to have Razorpay SMS a real phone number as a
+side effect.
+
+**The insert precedes the external call.** If the process dies mid-send, the row
+already exists and a retry refuses to send again. The worst case is an action
+recorded as sent that was not -- reconcilable by a human. Reverse the order and
+the worst case is a duplicate payment link, which cannot be un-sent.
+
+**Retries never queue for approval.** They touch the gateway rather than the
+customer, so putting them behind a human stalls the cheapest recovery path for no
+benefit.
+
+---
+
+### The rule was named for an alert it never sent
+
+Running the end-to-end demo, the merchant-misconfiguration case printed:
+
+```
+pay_DEMO_MERCHANT   merchant_config   ->  NOTHING   [merchant_alert_only]
+```
+
+A rule called `merchant_alert_only` that emits no alert. The case was classified
+correctly, suppressed correctly, and the one recoverable thing about it was
+silently discarded.
+
+This is the failure class discovered on day 0 from the first real Razorpay
+payload -- a payment blocked because the merchant had international cards
+disabled. No customer action can clear it, so suppressing customer contact is
+right. But telling the *merchant* is the entire value: it is a setting they can
+change in thirty seconds, and every payment it blocks until they do is lost.
+
+The allocator now emits a real `merchant_alert` action. It costs nothing and
+consumes no contact budget, because it goes to the merchant rather than to a
+customer.
+
+**The first fix made it worse, and the output said so.** Emitting the alert from
+`preferred_action` was not enough: `MERCHANT_ALERT` is not in the
+customer-facing candidate list, so the feasibility filter stripped it and the
+case fell through to the *fraud*-suppression branch -- a misconfiguration
+labelled as a risk block. The change applied cleanly, lint passed, and the
+behaviour was wrong in a new way. Caught by re-reading the demo output rather
+than by trusting that the edit had done what it said.
+
+One existing test failed after the fix, correctly: it asserted that
+merchant-config cases are never acted on, which was true before and is wrong now.
+Updated to assert the thing that actually matters -- a fraud block gets nothing,
+a misconfiguration gets an alert and zero customer contact.
+
+---
+
+### Day 8 audit: four bugs, two of which broke a promise to a person
+
+**1. Quiet hours were enforced in the wrong timezone.**
+
+The policy is written in IST -- "no customer contact between 21:00 and 09:00" --
+and the allocator compared it against the server's UTC clock. **Ten of twenty-four
+hours were classified wrongly.** A payment-recovery message could go out at
+01:00 IST because UTC read 19:30, and be suppressed at 13:00 IST because UTC read
+07:30.
+
+Quiet hours are not an optimisation. They are a promise that a merchant will not
+wake someone up to ask for money. Enforced in the wrong timezone the rule
+protects nobody and blocks the wrong sends, while every log line and every test
+says it is working.
+
+Fixed by comparing absolute instants converted to IST rather than bare hour
+integers. `is_quiet_at(datetime)` and `next_allowed_time(datetime)` replaced the
+hour-arithmetic, and the deferral now lands on a real timestamp outside the
+window rather than shifting a delay by a modular difference.
+
+**2. A rejection was silently discarded.**
+
+A reviewer rejects an action. It becomes terminal -- and the case stays
+`DIAGNOSED`, so the next tick finds no pending action, proposes a fresh one at
+`attempt_no + 1`, and puts the same case back in the queue.
+
+Measured: three reject cycles produced three rejected actions for one case. The
+queue was asking the same question until it got the answer it wanted, and with a
+five-minute tick a reviewer would face the same rs 99,000 case 288 times a day.
+
+Rejection is now terminal for the *case*, not just the action row.
+
+**3. The `live=True` branch had never executed.** The only code that creates
+anything at Razorpay was untested, and day 9 depends entirely on it. Now covered
+against a stubbed client -- including that a gateway outage is recorded rather
+than raised, and that notifications are provably disabled. The genuine
+end-to-end call belongs in the recorded demo, not in a suite that runs on every
+commit; a test that creates real payment links eventually messages a stranger.
+
+Writing those tests surfaced a fourth problem: a **missing API key raised**
+rather than returning, so one misconfigured deployment would take down a batch of
+two thousand cases instead of failing one action. Now recorded like any other
+failure, with the ledger saying which it was.
+
+**4. The live path fed the model placeholders.**
+
+`to_frame` handed the feature builder zeros for every customer-history field and
+`"unknown"` for every category. Nothing broke, because the estimator in use is a
+group-by that ignores them -- so this was invisible and would have stayed
+invisible until some future model that *does* use history was measured on real
+data and run on fakes. That gap does not announce itself; it shows up as a model
+that evaluated well and mysteriously does not work.
+
+History is now computed from the case store. It is genuinely thinner than the
+simulator's -- a live deployment sees failures, not the successful payments
+between them -- so `customer_observed_success_rate` is NaN rather than zero.
+Unknown is true; "always fails" is not.
+
+The same fix corrected `hour_ist`, which was being populated with a UTC hour
+under a name that says otherwise.
+
+### What the two halves have in common
+
+The timezone bug and the placeholder-features bug are the same mistake wearing
+different clothes: **a value that was labelled as one thing and was another.** An
+hour called `hour_ist` holding UTC. A field called `in_quiet_hours(hour_ist)`
+receiving a UTC hour. A frame column called `customer_prior_failures` holding
+zero because nobody had computed it.
+
+None of them fail. They all produce a number, of the right type, in the right
+range, that means something other than what its name claims. That is the failure
+mode this project keeps finding, and the only reliable defence has been to check
+what a value actually contains rather than what it is called.
+
+---

@@ -30,7 +30,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
+
+#: Razorpay's merchants and their customers are in India. Quiet hours are a fact
+#: about when a person is asleep, so they are evaluated in their local time and
+#: not in whatever timezone the server happens to run in.
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 @dataclass
@@ -53,12 +58,40 @@ class BudgetPolicy:
     quiet_hours_end: int = 9
 
     def in_quiet_hours(self, hour_ist: int) -> bool:
+        """Whether this *IST* hour falls inside the quiet window."""
         if self.quiet_hours_start > self.quiet_hours_end:  # wraps midnight
             return hour_ist >= self.quiet_hours_start or hour_ist < self.quiet_hours_end
         return self.quiet_hours_start <= hour_ist < self.quiet_hours_end
 
+    def is_quiet_at(self, moment: datetime) -> bool:
+        """Whether an absolute instant falls inside quiet hours.
+
+        Converts to IST first. The allocator's clock is UTC, and comparing a UTC
+        hour against an IST window misclassified 10 of 24 hours: a message could
+        be sent at 01:00 IST because UTC read 19:30, and blocked at 13:00 IST
+        because UTC read 07:30. A customer-protection rule enforced in the wrong
+        timezone protects nobody and blocks the wrong sends.
+        """
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        return self.in_quiet_hours(moment.astimezone(IST).hour)
+
+    def next_allowed_time(self, moment: datetime) -> datetime:
+        """The earliest instant at or after `moment` that is outside quiet hours."""
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        if not self.is_quiet_at(moment):
+            return moment
+        local = moment.astimezone(IST)
+        target = local.replace(
+            hour=self.quiet_hours_end, minute=0, second=0, microsecond=0
+        )
+        if target <= local:
+            target += timedelta(days=1)
+        return target.astimezone(moment.tzinfo)
+
     def next_allowed_hour(self, hour_ist: int) -> int:
-        """When a contact deferred out of quiet hours may be sent."""
+        """When a contact deferred out of quiet hours may be sent, in IST."""
         return self.quiet_hours_end if self.in_quiet_hours(hour_ist) else hour_ist
 
 
