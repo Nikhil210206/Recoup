@@ -191,6 +191,15 @@ def send_payment_link(
             # to have Razorpay message a real person as a side effect.
             "notify": {"sms": False, "email": False},
             "reminder_enable": False,
+            # Two independent ways to find our way back to the case when the
+            # payment lands. A payment link creates its own order, lazily, at
+            # payment time -- `order_id` is None here -- so the captured payment
+            # arrives on an order this case has never seen.
+            # Razorpay caps reference_id at 40 characters. "recoup_" plus a
+            # 36-character UUID is 43, so every live link creation failed with a
+            # BadRequestError -- and the first successful run only worked because
+            # the server was still executing older code that did not send it.
+            "reference_id": f"rcp_{case.id.replace('-', '')}"[:40],
             "notes": {"recoup_case_id": case.id, "recoup_action_id": action.id},
         })
     except Exception as exc:  # noqa: BLE001 - any failure must be recorded, not raised

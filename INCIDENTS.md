@@ -1044,3 +1044,144 @@ mode this project keeps finding, and the only reliable defence has been to check
 what a value actually contains rather than what it is called.
 
 ---
+
+## 2026-08-24 — Day 9
+
+### The real loop closed, and the server was running stale code ten minutes before it did
+
+Rs 2,499 recovered end to end on Razorpay test mode: real order, real declined
+payment, real webhook over a public tunnel, a decision the system made
+unassisted, a real payment link it created, a real payment, and the recovery
+attributed back to the case it started from.
+
+```
+1  case.opened      webhook     real event TThLAjhifL6XRB
+2  case.diagnosed   classifier  hard_decline, confidence 1.0, deterministic
+3  action.claimed   allocator
+4  action.executed  executor    payment link plink_TThLhBN3L9LPK3
+5  case.recovered   webhook     <- matched by notes.recoup_case_id
+```
+
+Evidence kept in `artifacts/real_loop_evidence.json`.
+
+**The blocker found before starting.** Attribution matched only on `order_ref`. I
+probed the API rather than assuming, and `payment_link.create` returns
+`order_id: None` -- a payment link creates its *own* order, lazily, at payment
+time. So a link-driven recovery arrives on an order the case has never seen, and
+the recovery this system exists to cause would have been logged as an unrelated
+payment. Attribution is now three strategies, most specific first, and the ledger
+records which one matched.
+
+**The near-miss.** Ten minutes before the payment I checked when the API process
+had started: **12:57**. I had made the attribution fix at **16:32**. The running
+server was executing stale code and would have matched on `order_id` only. The
+payment would have succeeded, the webhook would have arrived, the signature would
+have verified, and the recovery would simply never have been attributed. No
+error, no failing test -- a number that never appears.
+
+Caught by comparing process start time against file mtime, which is not a thing
+any test does. Restarted, verified the loaded module actually contained the new
+function, then paid.
+
+**Two bugs in my own harness, found by running it.** The script polled the ten
+most recent payments and took the first failed one -- which was a payment from
+*the previous day*, so it then waited forever for a case that had long since been
+truncated, looking entirely correct while doing so. Now filtered to payments
+created after the run starts. And the instructions told the user to force a
+failure with a short OTP; the checkout validates OTP length in the browser and
+rejects it before anything reaches Razorpay, so no payment is attempted and no
+webhook fires. A rejected form is not a failed payment.
+
+**The pattern, again.** Stale code that runs. A payment from yesterday that looks
+like today's. A form rejection that looks like a failure. None of them error.
+Every one produces a plausible outcome that means something other than what it
+appears to. That is now nine days of the same failure mode, and the only defence
+that has worked is checking what a thing *is* rather than what it looks like.
+
+---
+
+### The second real run claimed a recovery it had nothing to do with
+
+Re-ran the real loop to prove the *script* worked, since the first run had been
+interrupted twice by my own fixes. The second run reported `RECOVERED` in 59
+seconds. It was wrong, and the way it was wrong is the worst thing this project
+has produced.
+
+**What actually happened:**
+
+```
+1  case.opened                webhook
+2  case.diagnosed             classifier   hard_decline
+3  action.claimed             allocator
+4  action.failed              executor     <- the payment link was never created
+5  case.recovered             webhook      <- matched by order_id
+```
+
+The payment link creation failed. The case was marked `ACTED` regardless. The
+customer then paid through the *original* checkout link, `resolve_recovery` saw
+an `ACTED` case and credited the recovery to Recoup.
+
+**The system claimed to have recovered money it had done nothing about.**
+
+Every guard in this codebase exists to prevent precisely that. The counterfactual
+attribution, the self-recovery distinction, the unnecessary-contact metric, the
+whole argument that a naive recovery dashboard overstates impact by 2x -- all of
+it undone by one unconditional line in the live path: `_execute` set
+`case.status = ACTED` whether or not the action had happened.
+
+Fixed: `_execute` returns whether the action was performed, and the case only
+advances if it was. A failure now writes `case.action_did_not_execute` and leaves
+the case unworked, so a later payment on it is correctly a self-recovery. Three
+tests pin it, including the end-to-end version.
+
+The database record has been corrected -- run 2 is now `closed_unrecovered`,
+which is the truth.
+
+**Why the link failed, and why run 1 had worked.** Razorpay caps `reference_id`
+at 40 characters. I had added `f"recoup_{case.id}"` -- seven characters plus a
+36-character UUID, so 43. Every live link creation failed with a
+`BadRequestError`.
+
+Run 1 succeeded only because the server was still executing older code that never
+sent the field. So the fix I made to *improve* attribution silently broke link
+creation, and the run that proved the loop worked was proving it against code
+that no longer existed on disk.
+
+**What I take from this.** I have twice now been caught by a running process
+whose code did not match the repository. The first time it hid a fix; this time
+it hid a break. Restarting the API is now part of the loop rather than something
+I remember to do, and the acceptance check reads the loaded module rather than
+the file.
+
+The deeper point is about the result itself. A green `RECOVERED` in 59 seconds
+looked like the best evidence in the project. It was a false positive produced by
+two bugs cancelling into a plausible outcome, and the only reason it was caught is
+that I read the ledger instead of the status field. **A summary can be wrong in
+ways the trail it summarises cannot.**
+
+---
+
+### Third run: genuine
+
+Ran the loop a third time on fixed code. It completed start to finish with no
+intervention, and this time it survives cross-checking:
+
+| | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| action | executed | **failed** | executed |
+| razorpay link | created | **none** | `plink_TTiTQCnaqNT3HK` |
+| matched by | notes | **order_id** | notes |
+| server code | **stale** | current | current |
+| verdict | accidental | **false positive** | genuine |
+
+Razorpay's own records agree: the link reports status `paid`, carries the
+`reference_id` Recoup generated, and names the capturing payment.
+
+Three attempts to demonstrate one thing, and the two failures were worth more
+than the success. The first passed for the wrong reason; the second passed while
+being false. Only the third means anything, and it only means anything because
+the first two were checked properly rather than accepted.
+
+`make real-loop` is now a claim a judge can run.
+
+---

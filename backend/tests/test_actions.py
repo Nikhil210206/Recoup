@@ -549,3 +549,113 @@ class TestLiveHistory:
         if detected.tzinfo is None:
             detected = detected.replace(tzinfo=UTC)
         assert int(frame.iloc[0].hour_ist) == detected.astimezone(IST).hour
+
+
+class TestFailedActionsDoNotEarnCredit:
+    """The worst bug this project produced, pinned.
+
+    A payment link failed to create. The case was marked `ACTED` anyway. The
+    customer later paid through a different route, `resolve_recovery` saw an
+    `ACTED` case, and the system credited itself with a recovery it had done
+    nothing to cause.
+
+    Every other guard here exists to prevent exactly that -- the counterfactual
+    attribution, the self-recovery distinction, the unnecessary-contact metric --
+    and one unconditional status assignment on the live path undid all of them.
+    """
+
+    def _break_razorpay(self, monkeypatch):
+        class _Broken:
+            payment_link = type(
+                "L", (), {"create": staticmethod(
+                    lambda payload: (_ for _ in ()).throw(RuntimeError("boom"))
+                )}
+            )()
+
+        monkeypatch.setattr(action_tools, "_razorpay_client", lambda: _Broken())
+
+    def test_a_failed_action_leaves_the_case_unworked(
+        self, client, db_session, monkeypatch
+    ):
+        self._break_razorpay(monkeypatch)
+        _webhook(client, "pay_FAILEX1", "card_expired", "customer", 249900, "e_failex1")
+
+        result = live_allocator.allocate_and_execute(
+            db_session, _allocator(), live=True
+        )
+        assert result["executed"] == 0
+        assert result["failed_to_execute"] == 1
+
+        case = _case(db_session, "pay_FAILEX1")
+        db_session.refresh(case)
+        assert case.status != CaseStatus.ACTED, (
+            "a case whose action failed was marked as acted on"
+        )
+
+    def test_a_payment_after_a_failed_action_is_a_self_recovery(
+        self, client, db_session, monkeypatch
+    ):
+        """The end-to-end version. If we did nothing, the money is not ours to
+        claim, however convenient the timing."""
+        from app.services.ingest import resolve_recovery
+
+        self._break_razorpay(monkeypatch)
+        _webhook(client, "pay_FAILEX2", "card_expired", "customer", 249900, "e_failex2")
+        live_allocator.allocate_and_execute(db_session, _allocator(), live=True)
+
+        case = _case(db_session, "pay_FAILEX2")
+        resolve_recovery(db_session, {
+            "event": "payment.captured",
+            "payload": {"payment": {"entity": {
+                "id": "pay_LATER", "order_id": case.order_ref, "amount": 249900,
+            }}},
+        })
+        db_session.commit()
+        db_session.refresh(case)
+
+        assert case.status == CaseStatus.CLOSED_UNRECOVERED
+        events = [e.event_type for e in case.events]
+        assert "case.self_recovered" in events
+        assert "case.recovered" not in events
+
+    def test_the_failure_is_recorded_in_the_ledger(
+        self, client, db_session, monkeypatch
+    ):
+        self._break_razorpay(monkeypatch)
+        _webhook(client, "pay_FAILEX3", "card_expired", "customer", 249900, "e_failex3")
+        live_allocator.allocate_and_execute(db_session, _allocator(), live=True)
+
+        case = _case(db_session, "pay_FAILEX3")
+        events = [e.event_type for e in case.events]
+        assert "action.failed" in events
+        assert "case.action_did_not_execute" in events
+
+
+class TestRazorpayFieldLimits:
+    def test_reference_id_fits_razorpays_limit(self, client, db_session, monkeypatch):
+        """Razorpay caps `reference_id` at 40 characters. "recoup_" plus a
+        36-character UUID is 43, so every live link creation failed -- and the
+        one run that worked only did so because the server was still executing
+        older code that never sent the field.
+        """
+        captured: dict = {}
+
+        class _Links:
+            @staticmethod
+            def create(payload):
+                captured.update(payload)
+                return {"id": "plink_OK", "short_url": "https://rzp.io/x/ok"}
+
+        monkeypatch.setattr(
+            action_tools, "_razorpay_client",
+            lambda: type("C", (), {"payment_link": _Links()})(),
+        )
+
+        _webhook(client, "pay_REFLEN", "card_expired", "customer", 249900, "e_reflen")
+        case = _case(db_session, "pay_REFLEN")
+        claimed = action_tools.claim(db_session, case, ActionType.PAYMENT_LINK_SMS)
+        action_tools.send_payment_link(db_session, claimed.action, case, live=True)
+
+        assert len(captured["reference_id"]) <= 40
+        # Still has to be unique per case, or two cases collide in Razorpay.
+        assert case.id.replace("-", "")[:20] in captured["reference_id"]

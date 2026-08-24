@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Case, CaseStatus, CauseMethod, LossChannel
+from app.models import Action, Case, CaseStatus, CauseMethod, LossChannel
 from app.services import classifier as classifier_mod
 from app.services import ledger
 
@@ -368,66 +368,100 @@ def ingest_abandoned_checkout(db: Session, event: dict[str, Any]) -> Case | None
     return case
 
 
+def _find_case_for_payment(db: Session, payment: dict[str, Any]) -> tuple[Case | None, str]:
+    """Work out which case, if any, a successful payment settles.
+
+    Three strategies, most specific first. More than one is needed because a
+    recovery does not necessarily arrive on the order that failed:
+
+    **notes** -- a payment link we created carries `recoup_case_id` in its notes,
+    and Razorpay copies link notes onto the resulting payment. This is exact.
+
+    **payment_link_id** -- if the notes are missing, the payment still names the
+    link, and the link id is stored on the action that created it.
+
+    **order_id** -- the customer simply retried the original order. No link
+    involved.
+
+    The order-only version was the whole implementation, and it would have failed
+    on every link-driven recovery: a payment link creates its *own* order, lazily,
+    at payment time. `payment_link.create` returns `order_id: None`. So the
+    captured payment carries an order the case has never heard of, and the
+    recovery this system exists to cause would have been recorded as an unrelated
+    payment.
+    """
+    notes = payment.get("notes") or {}
+    case_id = notes.get("recoup_case_id")
+    if case_id:
+        case = db.scalar(select(Case).where(Case.id == str(case_id)))
+        if case is not None:
+            return case, "notes.recoup_case_id"
+
+    link_id = payment.get("payment_link_id")
+    if link_id:
+        action = db.scalar(select(Action).where(Action.external_ref == str(link_id)))
+        if action is not None:
+            case = db.scalar(select(Case).where(Case.id == action.case_id))
+            if case is not None:
+                return case, "payment_link_id"
+
+    order_id = payment.get("order_id")
+    if order_id:
+        case = db.scalar(
+            select(Case)
+            .where(Case.order_ref == str(order_id))
+            .order_by(Case.detected_at.desc())
+        )
+        if case is not None:
+            return case, "order_id"
+
+    return None, "unmatched"
+
+
 def resolve_recovery(db: Session, event: dict[str, Any]) -> Case | None:
     """Adapter for `payment.captured` -- attributes a recovery on the live loop.
 
-    Attribution matches on `order_id`, deliberately. Matching on customer would
-    count any later unrelated purchase as a recovery and inflate every number in
-    the evaluation.
-
-    Only cases we actually acted on can be marked recovered. A customer who
-    retried on their own, before the allocator did anything, is not a recovery
-    this system gets to claim -- that distinction is the whole point of tracking
-    unnecessary-contact cost, so it must not be blurred here.
+    Attribution is deliberately conservative about *credit*. Only a case we
+    actually acted on can be marked recovered. A customer who paid before the
+    allocator did anything is recorded as a self-recovery, because blurring those
+    two is exactly how recovery numbers inflate.
     """
     payment = _entity(event, "payment")
-    order_id = payment.get("order_id")
-    if not order_id:
+    case, matched_by = _find_case_for_payment(db, payment)
+    if case is None:
         return None
 
-    case = db.scalar(
-        select(Case)
-        .where(Case.order_ref == order_id)
-        .where(Case.status.in_([CaseStatus.ACTED, CaseStatus.ALLOCATED]))
-        .order_by(Case.detected_at.desc())
-    )
-    if case is None:
-        # Either no such case, or one we never acted on. Record the second case
-        # as a self-recovery so the evaluation can separate "we recovered it"
-        # from "it recovered itself".
-        unacted = db.scalar(
-            select(Case)
-            .where(Case.order_ref == order_id)
-            .where(Case.status.in_([CaseStatus.OPEN, CaseStatus.DIAGNOSED, CaseStatus.SUPPRESSED]))
-            .order_by(Case.detected_at.desc())
-        )
-        if unacted is None:
-            return None
-        unacted.status = CaseStatus.CLOSED_UNRECOVERED
-        ledger.append(
-            db,
-            case_id=unacted.id,
-            event_type="case.self_recovered",
-            actor="webhook",
-            payload={
-                "recovering_payment_id": payment.get("id"),
-                "order_id": order_id,
-                "amount_paise": int(payment.get("amount") or 0),
-                "note": "customer paid without an intervention from Recoup",
-            },
-        )
-        return unacted
+    amount = int(payment.get("amount") or 0)
+    acted = case.status in (CaseStatus.ACTED, CaseStatus.ALLOCATED)
 
-    case.status = CaseStatus.RECOVERED
+    if acted:
+        case.status = CaseStatus.RECOVERED
+        event_type = "case.recovered"
+        note = None
+    elif case.status in (
+        CaseStatus.OPEN,
+        CaseStatus.DIAGNOSED,
+        CaseStatus.PENDING_DIAGNOSIS,
+        CaseStatus.SUPPRESSED,
+    ):
+        case.status = CaseStatus.CLOSED_UNRECOVERED
+        event_type = "case.self_recovered"
+        note = "customer paid without an intervention from Recoup"
+    else:
+        return None
+
     ledger.append(
         db,
         case_id=case.id,
-        event_type="case.recovered",
+        event_type=event_type,
         actor="webhook",
         payload={
             "recovering_payment_id": payment.get("id"),
-            "order_id": order_id,
-            "amount_paise": int(payment.get("amount") or 0),
+            "order_id": payment.get("order_id"),
+            "payment_link_id": payment.get("payment_link_id"),
+            "amount_paise": amount,
+            "matched_by": matched_by,
+            **({"note": note} if note else {}),
         },
     )
     return case

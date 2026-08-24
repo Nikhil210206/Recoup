@@ -312,7 +312,7 @@ def allocate_and_execute(
     by_id = {c.id: c for c in eligible}
     decisions, ledger_state = allocator.plan(to_frame(eligible, db), now=now)
 
-    executed = queued = suppressed = 0
+    executed = queued = suppressed = failed = 0
     for decision in decisions:
         case = by_id.get(decision.case_id)
         if case is None:
@@ -339,13 +339,16 @@ def allocate_and_execute(
             queued += 1
             continue
 
-        _execute(db, claimed.action, case, decision, live=live)
-        executed += 1
+        if _execute(db, claimed.action, case, decision, live=live):
+            executed += 1
+        else:
+            failed += 1
 
     return {
         "considered": len(candidates),
         "planned": len(decisions),
         "executed": executed,
+        "failed_to_execute": failed,
         "queued_for_approval": queued,
         "suppressed": suppressed,
         "stopped": stopped,
@@ -386,19 +389,54 @@ def _record_suppression(db: Session, case: Case, decision: Decision) -> None:
 
 def _execute(
     db: Session, action: Action, case: Case, decision: Decision, *, live: bool
-) -> None:
+) -> bool:
+    """Perform the decided action. Returns whether it actually happened.
+
+    **The case only advances if the action succeeded.** This used to set `ACTED`
+    unconditionally, and the consequence was the worst bug in the project: a
+    payment link failed to create, the case was marked as acted on anyway, the
+    customer later paid through a different route, and `resolve_recovery` saw an
+    `ACTED` case and credited the recovery to us.
+
+    The system claimed to have recovered money it had done nothing about. Every
+    guard elsewhere in this codebase exists to stop exactly that -- the
+    counterfactual attribution, the self-recovery distinction, the unnecessary-
+    contact metric -- and one unconditional status assignment on the live path
+    undid all of them.
+    """
     if decision.action == ActionType.RETRY:
-        action_tools.schedule_retry(db, action, case, delay_h=decision.delay_h)
+        result = action_tools.schedule_retry(db, action, case, delay_h=decision.delay_h)
     elif decision.action == ActionType.MERCHANT_ALERT:
-        action_tools.alert_merchant(
+        result = action_tools.alert_merchant(
             db, action, case,
             message=f"{case.cause} is blocking payments; only you can change it",
         )
     elif decision.action in CONTACT_ACTIONS:
         channel = str(decision.action).replace("payment_link_", "")
-        action_tools.send_payment_link(db, action, case, channel=channel, live=live)
+        result = action_tools.send_payment_link(
+            db, action, case, channel=channel, live=live
+        )
     else:
-        action_tools.schedule_retry(db, action, case, delay_h=decision.delay_h)
+        result = action_tools.schedule_retry(db, action, case, delay_h=decision.delay_h)
+
+    if not result.performed:
+        # The case stays where it was. It is still open, still unworked, and a
+        # later payment on it is a self-recovery rather than one we caused.
+        ledger.append(
+            db,
+            case_id=case.id,
+            event_type="case.action_did_not_execute",
+            actor="executor",
+            payload={
+                "action_id": action.id,
+                "action_type": str(decision.action),
+                "detail": result.detail,
+                "note": "case not advanced; nothing was done to it",
+            },
+        )
+        db.commit()
+        return False
 
     case.status = CaseStatus.ACTED
     db.commit()
+    return True

@@ -111,6 +111,27 @@ documented production path — `ANTHROPIC_API_KEY` switches it automatically. Mo
 choice was decided by a held-out evaluation, not preference: a 3B model scored
 4/7 with **three confidently-wrong answers above the acting threshold**.
 
+## It works on the real thing
+
+One payment recovered end to end on Razorpay test mode — real order, real
+declined payment, real webhook, a decision the system made unassisted, a real
+payment link it created, real payment, recovery attributed:
+
+```
+1  case.opened      webhook     real event TThLAjhifL6XRB
+2  case.diagnosed   classifier  hard_decline, confidence 1.0, deterministic
+3  action.claimed   allocator
+4  action.executed  executor    payment link plink_TThLhBN3L9LPK3
+5  case.recovered   webhook     <- matched by notes.recoup_case_id
+```
+
+It chose a **method switch, not a retry** — the issuer had declined the card, and
+retrying the same instrument gets declined again. Razorpay's own error taxonomy
+already said so.
+
+Unedited trail in [`docs/evidence/`](docs/evidence/). Reproduce with
+`make real-loop`.
+
 ## Evaluation
 
 - **12,004 cases**, 90 days, 3 loss channels, chronological train/calibration/test
