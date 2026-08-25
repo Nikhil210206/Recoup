@@ -43,6 +43,14 @@ class ArmResult:
     #: two-sample comparison into a paired one.
     per_case_net: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    #: The case each entry of `per_case_net` belongs to.
+    #:
+    #: Carried so a paired comparison can *verify* it is pairing the same cases
+    #: rather than assume it. One arm was evaluated on a value-sorted copy of the
+    #: frame, so its rows were in a different order; the bootstrap still ran,
+    #: still reported a mean difference, and was comparing unrelated cases.
+    case_ids: np.ndarray = field(default_factory=lambda: np.array([]))
+
     @property
     def net_paise(self) -> int:
         return self.incremental_paise - self.cost_paise
@@ -80,6 +88,7 @@ def evaluate(cases: pd.DataFrame, policy: Policy, fatigue_lambda: float) -> ArmR
         recovered_cases=sum(e.recovered for e in eps),
         caused_cases=sum(e.caused_by_us for e in eps),
         per_case_net=np.array([e.net_incremental_paise for e in eps], dtype=np.int64),
+        case_ids=cases.case_id.to_numpy(),
     )
 
 
@@ -102,7 +111,31 @@ def paired_bootstrap(
     Reports the mean difference in net incremental rupees per case, a 95%
     percentile interval, and the share of cases where each arm did better.
     """
-    diff = (a.per_case_net - b.per_case_net) / 100.0  # rupees
+    # Align on case id before differencing. Two arms evaluated on differently
+    # ordered frames will subtract unrelated cases from each other and report a
+    # confident, meaningless result -- which is exactly what happened once.
+    if len(a.case_ids) and len(b.case_ids):
+        if len(a.case_ids) != len(b.case_ids):
+            raise ValueError(
+                f"cannot pair {a.arm} ({len(a.case_ids)} cases) with "
+                f"{b.arm} ({len(b.case_ids)} cases)"
+            )
+        if not np.array_equal(a.case_ids, b.case_ids):
+            order_a = np.argsort(a.case_ids)
+            order_b = np.argsort(b.case_ids)
+            if not np.array_equal(a.case_ids[order_a], b.case_ids[order_b]):
+                raise ValueError(
+                    f"{a.arm} and {b.arm} were evaluated on different case sets; "
+                    "a paired comparison is not defined"
+                )
+            left = a.per_case_net[order_a]
+            right = b.per_case_net[order_b]
+        else:
+            left, right = a.per_case_net, b.per_case_net
+    else:
+        left, right = a.per_case_net, b.per_case_net
+
+    diff = (left - right) / 100.0  # rupees
     rng = np.random.default_rng(seed)
     idx = rng.integers(0, len(diff), size=(n_boot, len(diff)))
     means = diff[idx].mean(axis=1)

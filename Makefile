@@ -1,4 +1,4 @@
-.PHONY: help venv install db db-down api data data-worlds assumptions arms arms-worlds classifier-eval ollama model allocate live-demo real-loop test test-all lint fmt clean
+.PHONY: help venv install db db-down api data data-worlds assumptions arms arms-worlds classifier-eval ollama model allocate live-demo real-loop eval test test-all lint fmt clean
 
 PY := backend/.venv/bin/python
 PIP := backend/.venv/bin/pip
@@ -20,6 +20,7 @@ help:
 	@echo "  make allocate   run the allocator bake-off at equal contact budgets"
 	@echo "  make live-demo   webhook -> classify -> allocate -> approve, end to end"
 	@echo "  make real-loop   the same loop against REAL Razorpay test mode"
+	@echo "  make eval       the full evaluation; writes EVALUATION.md"
 	@echo "  make test       unit tests (no database needed)"
 	@echo "  make test-all   unit + integration tests (needs make db)"
 	@echo "  make lint       ruff check"
@@ -82,6 +83,9 @@ live-demo:
 
 real-loop:
 	cd backend && .venv/bin/python -m app.scripts.real_loop
+
+eval:
+	cd backend && .venv/bin/python -m app.evaluation.harness --world $(or $(WORLD),base) --seed $(or $(SEED),42) --write
 
 test:
 	cd backend && .venv/bin/pytest

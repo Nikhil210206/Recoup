@@ -84,6 +84,7 @@ def execute(
         recovered_cases=recovered_cases,
         caused_cases=caused_cases,
         per_case_net=per_case_net,
+        case_ids=cases.case_id.to_numpy(),
     )
 
 
@@ -182,4 +183,5 @@ def execute_ladders(
         recovered_cases=recovered_cases,
         caused_cases=caused_cases,
         per_case_net=per_case_net,
+        case_ids=cases.case_id.to_numpy(),
     )

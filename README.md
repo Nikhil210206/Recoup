@@ -37,12 +37,18 @@ timing:
 
 | action policy | recovered | lift |
 |---|---|---|
-| fixed retry @ 24h (T+3 style) | ₹6.1L | — |
-| fixed payment link @ 24h | ₹30.2L | +394% |
-| retry at the cause's best moment | ₹20.3L | +231% |
-| **cause-aware action + timing** | **₹38.2L** | **+524%** |
+| fixed retry @ 24h (T+3 style) | ₹6.9L | — |
+| fixed payment link @ 24h | ₹33.5L | +386% |
+| retry at the cause's best moment | ₹22.6L | +229% |
+| **cause-aware action + timing** | **₹42.1L** | **+512%** |
 
-Holds at +519% to +529% across pessimistic, base and optimistic worlds.
+Holds at +506% to +517% across pessimistic, base and optimistic worlds.
+
+That headline decomposes into two claims, and the second is the interesting one.
+Against a *cause-blind but not stupid* baseline — always send a payment link —
+knowing the cause is worth **+36%**, and it degrades gracefully: still **+19%**
+when half of all causes are misclassified. Most of the +512% is simply *not
+blindly retrying*; the rest is knowing which verb to use.
 
 ## What is *not* worth much, and is reported anyway
 
@@ -149,7 +155,13 @@ Unedited trail in [`docs/evidence/`](docs/evidence/). Reproduce with
   parameterisations. Every headline holds in all three.
 - **Paired bootstrap** with 95% intervals on every comparison.
 
-Every number is reproducible: `make eval` twice gives byte-identical output.
+Every number is reproducible: `make eval` twice gives byte-identical output,
+and it writes [`EVALUATION.md`](EVALUATION.md) from the run so the document
+cannot drift from the numbers it reports.
+
+Design decisions, and the measurements behind them, are in
+[`ARCHITECTURE.md`](ARCHITECTURE.md) — including the section on where a model was
+deliberately refused.
 
 ## Quickstart
 

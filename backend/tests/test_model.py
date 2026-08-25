@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from app.evaluation import BUDGET_FRACTION
 from app.model import calibration as cal
 from app.model import features as feat
 from app.model.dataset import CONTROL_SHARE, build_training_frame, split_arms
@@ -185,7 +186,7 @@ class TestLevers:
         This test exists so the claim cannot silently invert.
         """
         test = cases[cases.split == "test"].reset_index(drop=True)
-        results = compare(test, budget=int(len(test) * 0.15))
+        results = compare(test, budget=int(len(test) * BUDGET_FRACTION))
 
         action_lift = max(r.lift for r in results if r.lever == "action")
         ranking_lift = max(r.lift for r in results if r.lever == "ranking")
@@ -288,7 +289,7 @@ class TestExperimentScoping:
         for world in ("base", "pessimistic", "optimistic"):
             cases = load(world, 42)
             test = cases[cases.split == "test"].reset_index(drop=True)
-            results = compare(test, budget=int(len(test) * 0.15))
+            results = compare(test, budget=int(len(test) * BUDGET_FRACTION))
             action = max(r.lift for r in results if r.lever == "action")
             ranking = max(r.lift for r in results if r.lever == "ranking")
             assert action > 1.0, world

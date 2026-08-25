@@ -1185,3 +1185,112 @@ the first two were checked properly rather than accepted.
 `make real-loop` is now a claim a judge can run.
 
 ---
+
+## 2026-08-25 — Day 10
+
+### The obvious robustness sweep would have been reassuring and meaningless
+
+Built the two sweeps. The first design for the "degraded oracle" sweep was to
+corrupt the *uplift estimate* and watch the allocator degrade -- which is what
+the plan called for, and it is the wrong experiment.
+
+The measurements already say ranking is worth about 1%. Degrading the thing that
+drives ranking can therefore only move the result by about 1%, and the sweep
+would have produced a flat line that looked like robustness and demonstrated
+nothing.
+
+The system's actual claim rests on **action selection from the cause**. So the
+question worth pricing is: what if the cause is wrong? Razorpay's codes are
+reliable, but an integration can mis-map them and the day-4 measurement caught a
+model assigning a fraud block to a retryable decline at 0.95 confidence.
+
+**First version of that sweep was also too weak.** Measured against fixed retry,
+the system still won by +478% at 50% classification error, which is true and
+uninformative: a wrong cause usually still produces a *contact*, and contacting
+beats retrying for most causes. The comparison was measuring "does it retry
+blindly", not "does it know the cause".
+
+Added a second, harder baseline -- always send a payment link, cause-blind but
+not stupid. Against that, knowing the cause is worth **+36%** at zero error,
+decaying to **+19%** at 50%.
+
+That decomposition is more honest than the headline it replaces. The +512% splits
+into two claims: **not blindly retrying** is most of it, and **knowing the cause**
+adds roughly a third on top. Both are real; only the second is the interesting
+one, and it is the one that degrades.
+
+### A test that failed for being wrong about the code
+
+`test_every_section_is_present` asserted the harness produced sections containing
+the words "lever" and "ceiling". The sections are titled "Which decision recovers
+the money" and "How much was left to take". The test was wrong; the harness was
+right.
+
+Rewrote it to assert on phrases the titles actually use, and — more usefully —
+with a comment on each explaining which claim in README or ARCHITECTURE would
+become unsupported if that section disappeared. A test that pins a name is
+brittle; one that pins a dependency is worth keeping.
+
+---
+
+### Day 10 audit: a paired test that was not pairing anything
+
+**1. The paired bootstrap compared unrelated cases.**
+
+One arm -- the idealised pooled-and-ranked baseline -- is evaluated on a
+value-sorted copy of the frame, so its rows are in a different order from every
+other arm's. `paired_bootstrap` subtracted row *i* of one from row *i* of the
+other. It ran, returned Rs 983 with a 95% interval, and marked the result
+significant.
+
+What it corrupted is subtler than it first looked. The point estimate was
+*correct*: `mean(a - b) = mean(a) - mean(b)` whatever the pairing. What broke was
+the variance, and therefore every interval and every significance verdict:
+
+| | mean | std | 95% CI | width |
+|---|---|---|---|---|
+| unaligned | 983 | 9,692 | [586, 1,365] | 780 |
+| aligned | 983 | 6,657 | [729, 1,268] | 539 |
+
+The interval was **1.45x too wide**. Common random numbers exist precisely to
+shrink that variance; pairing the wrong rows discarded the entire benefit while
+still calling it a paired test. It erred toward *under*-claiming, which is the
+better direction to be wrong in and still wrong.
+
+Fixed structurally rather than locally: `ArmResult` now carries the case ids
+belonging to each entry, `paired_bootstrap` aligns on them, and it raises rather
+than guesses if two arms were evaluated on different case sets.
+
+**2. The README and the evaluation described different experiments.**
+
+The README quoted a lever study run at a 15% contact budget; `make eval` used
+25%. Both were internally correct and they disagreed -- +524% against +512%, and
+different rupee figures throughout. Neither document was wrong on its own terms,
+which is what made it survive a claim-verification pass that only checked whether
+each number was *reproducible*, not whether the two documents were describing the
+same thing.
+
+`BUDGET_FRACTION` is now defined once and imported. Two tests enforce it: one
+fails if it is ever defined in more than one place, another fails on any
+hardcoded `len(x) * 0.<n>` outside that definition. Four such literals were still
+scattered across `train.py` and `test_model.py`.
+
+**3. A test that asserted the wrong thing about its own subject.**
+
+`test_every_section_is_present` looked for sections containing the words "lever"
+and "ceiling"; the sections are titled *"Which decision recovers the money"* and
+*"How much was left to take"*. The test failed, the harness was right. Rewritten
+to assert on the phrases actually used, with a note on each explaining which
+README or ARCHITECTURE claim goes unsupported if that section disappears -- a test
+that pins a name is brittle, one that pins a dependency is worth having.
+
+### The shape, tenth day running
+
+The pairing bug produced a number of the right type, in a plausible range, marked
+significant, that was not measuring what its name said. So did the budget drift:
+two documents, both reproducible, both accurate, describing different experiments.
+
+Neither would ever fail. Both were found by asking what the number would look like
+if it were wrong, and whether that was distinguishable from what was on screen.
+
+---

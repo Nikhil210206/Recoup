@@ -27,6 +27,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from app.evaluation import BUDGET_FRACTION
 from app.model import calibration as cal
 from app.model.dataset import build_training_frame, summarise
 from app.model.uplift import UpliftModel
@@ -249,7 +250,7 @@ def _lever_comparison(world: str, seed: int) -> None:
 
     cases = load_cases(world, seed)
     cases = cases[cases.split == "test"].reset_index(drop=True)
-    budget = int(len(cases) * 0.15)
+    budget = int(len(cases) * BUDGET_FRACTION)
 
     print(f"\nwhich lever recovers the money  (budget: {budget:,} contacts)")
     print("  'action' holds case selection fixed and varies what we do.")
@@ -299,7 +300,7 @@ def _miscalibration_experiment(model: UpliftModel, world: str, seed: int) -> Non
         float(ACTION_COST_PAISE[str(a)].value) if str(a) in ACTION_COST_PAISE else 0.0
         for a in actions
     ])
-    budget = int(len(cases) * 0.15)
+    budget = int(len(cases) * BUDGET_FRACTION)
 
     print(f"\nmiscalibration experiment  (budget: {budget:,} contacts over {len(cases):,} cases)")
     print("  Monotone distortions: the case ORDER is identical, so ROC-AUC and")
