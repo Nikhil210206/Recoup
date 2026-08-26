@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Case, CaseStatus
+from app.services import live_allocator
 from app.services.ingest import classify_pending
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -32,9 +33,7 @@ def run_classify_pending(limit: int = 25, db: Session = Depends(get_db)) -> dict
     them rather than blocking on a model call.
     """
     waiting = db.scalar(
-        select(func.count())
-        .select_from(Case)
-        .where(Case.status == CaseStatus.PENDING_DIAGNOSIS)
+        select(func.count()).select_from(Case).where(Case.status == CaseStatus.PENDING_DIAGNOSIS)
     )
     processed = classify_pending(db, limit=limit)
     return {
@@ -44,10 +43,31 @@ def run_classify_pending(limit: int = 25, db: Session = Depends(get_db)) -> dict
     }
 
 
+@router.post("/execute-due")
+def run_execute_due(
+    limit: int = 100,
+    live: bool = False,
+    force: bool = False,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Send contacts whose deferral has expired.
+
+    Quiet hours defer a customer contact rather than dropping it, so something
+    has to pick the deferred ones up again. Without this tick the deferral is
+    indistinguishable from a silent drop -- and the ledger would say the contact
+    was scheduled while nothing ever sent it.
+
+    `live` defaults to False, matching every other execution path here.
+
+    `force` sends contacts ahead of their cause-implied delay -- needed for a
+    demonstration, and logged to the ledger as a human override. It does not
+    bypass quiet hours.
+    """
+    return live_allocator.execute_due(db, limit=limit, live=live, force=force)
+
+
 @router.get("/queue")
 def queue_depth(db: Session = Depends(get_db)) -> dict:
     """Case counts by status. The first thing to look at when something stalls."""
-    rows = db.execute(
-        select(Case.status, func.count()).group_by(Case.status)
-    ).all()
+    rows = db.execute(select(Case.status, func.count()).group_by(Case.status)).all()
     return {str(status): int(count) for status, count in rows}

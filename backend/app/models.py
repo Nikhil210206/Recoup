@@ -259,6 +259,18 @@ class Action(Base):
     approved_by: Mapped[str | None] = mapped_column(String(64))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: When this action may actually be carried out.
+    #:
+    #: The allocator can defer a customer contact -- quiet hours are the reason
+    #: it usually does -- and that deferral has to survive leaving the allocator.
+    #: It previously did not: the decision adjusted an in-memory delay, the
+    #: executor never read it, and every deferred contact went out immediately.
+    #: A rule that is computed, recorded and then ignored is worse than no rule,
+    #: because the ledger says it held.
+    #:
+    #: NULL means "no constraint, send now".
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
     #: The rule that authorised or refused this action, copied from the
     #: allocator's decision so the action row is self-describing in an audit.
     decided_by_rule: Mapped[str | None] = mapped_column(String(64))

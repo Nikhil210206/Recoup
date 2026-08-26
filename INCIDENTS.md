@@ -1294,3 +1294,103 @@ Neither would ever fail. Both were found by asking what the number would look li
 if it were wrong, and whether that was distinguishable from what was on screen.
 
 ---
+
+## 2026-08-26 — Day 11
+
+Building the console meant putting the live path on a screen, which turned out
+to be a different kind of test. Reading the ledger back as prose surfaced two
+defects that every existing test agreed were fine.
+
+---
+
+### The system computed a send time, recorded it, and then ignored it
+
+**Expected:** the evidence timeline would read as a clean sequence — failure,
+diagnosis, decision, send, recovery.
+
+**Actually:** step three said the deciding rule was `quiet_hours`, and step four
+said the payment link was created 0.6 seconds later. The recovery in
+`docs/evidence/` happened at **00:36 IST**, which is inside the quiet window the
+rule exists to enforce.
+
+**Why:** `send_at` was a local variable in `allocator/policy.py`. It adjusted
+`Decision.delay_h` and never left the function. `Decision` has no send time, and
+`_execute` in `live_allocator.py` called `send_payment_link` immediately.
+
+The shape of it is worse than a missed check. `_execute` **did** honour
+`delay_h` — for `RETRY`, which it passed to `schedule_retry`. And the allocator
+only ever applies the quiet-hours shift to actions that contact a customer;
+retries return earlier, unrationed. So the delay was honoured on exactly the
+actions that touch a gateway, and dropped on exactly the ones that touch a
+person. A rule enforced with perfect precision on everything it was not for.
+
+Nobody was messaged, but only because link notifications are disabled
+everywhere in this codebase. That is a second guard doing the first guard's job,
+and it is not something to be reassured by.
+
+**The larger half.** The same discarded value carries the **per-cause delay** —
+48 hours for insufficient funds so the retry lands after payday, 26 for a spent
+limit, 6 for a hard decline. Timing is half of the result this project leads
+with: *cause-aware action **and timing**, +512%*. The evaluation models it. The
+deployed path sent everything immediately. The system being measured and the
+system that runs were not the same system, and the headline number is the one
+that named the difference.
+
+**Fix:** one function, `contact_due_at`, used by both the executor and the tick,
+computing the send time from **detection** rather than from now — "48 hours
+after the payment failed" is what the evaluation scores, and a case picked up
+three days late is already due rather than owed another 48 hours. Contacts that
+are not due are recorded with `scheduled_for`, a `case.action_deferred` ledger
+entry, and a third execution outcome (`DEFERRED`) that is neither executed nor
+failed. `/tasks/execute-due` sends them when the time comes, re-checking quiet
+hours at that moment rather than trusting the earlier arithmetic.
+
+**What it cost.** A hard decline now waits six hours, so the 48-second real-loop
+recording is no longer reproducible live. Rather than weaken the rule, there is
+an explicit operator override that sends ahead of the cause-implied delay and
+writes `case.schedule_overridden` to the ledger as a human decision. It does
+**not** bypass quiet hours: the delay is an optimisation worth a little expected
+value, and being asleep is not.
+
+**Why no test caught it.** Every test ingested a webhook stamped `now` and then
+asserted on what happened. A contact for a case detected a millisecond ago is
+correctly not due — so the tests were, unknowingly, all asserting the deferral
+was absent. Six of them failed on the fix, and each one was right about its own
+subject and wrong about this. They now pin the clock and age the case
+deliberately, because the live path genuinely behaves differently at 23:00 IST
+than at 14:00, and a test that reads the wall clock passes all afternoon.
+
+---
+
+### Four smaller ones, all found by rendering
+
+- **`Decimal` reached the browser as a string.** `SUM` over a `BIGINT` comes back
+  from psycopg as `Decimal`, which FastAPI serialises as `"2385375.3"`. Every
+  arithmetic operation on it in JavaScript would have been string concatenation.
+- **The approval queue counted the wrong thing.** A case whose action is awaiting
+  a human keeps status `DIAGNOSED` — the queue is a property of the *action*. The
+  overview reported an empty queue while three sat in it.
+- **A `GROUP BY` on a JSONB expression.** SQLAlchemy emits a fresh bind parameter
+  per occurrence, so Postgres saw two different expressions and refused.
+- **The bar chart had never worked.** `.fill` is a `<span>` inside a plain `div`,
+  so it stayed inline and dropped `width` and `height` silently. Every bar
+  rendered at zero and read as a deliberately minimal style. The tell was
+  `getComputedStyle` returning `"100%"` where a laid-out element returns pixels.
+
+Also: quiet hours **defer** a contact, they do not cancel one. The first draft of
+the console counted them under "blocked", which would have overstated the panel
+in our own favour. Refusals are now reported as three separate outcomes — never
+planned, planned then declined, postponed — because collapsing them is the easy
+read and the wrong one.
+
+---
+
+**The pattern, on the eleventh day.** Both real defects were values that were
+correct at the moment they were computed and wrong by the time they were used.
+The ledger said `quiet_hours`. The decision said `delay_h`. Both were right.
+Nothing compared either to what the system actually did, and no test can catch a
+number that is only wrong in a place it was never carried to.
+
+What found them was rendering the ledger as sentences and reading it. "Chose
+method switch prompt at 00:36" and "sent at 00:36" are both unremarkable alone.
+Next to each other they are a bug.

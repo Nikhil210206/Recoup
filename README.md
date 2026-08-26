@@ -83,7 +83,7 @@ Razorpay webhook ──▶ deterministic classifier (26 published codes, 0 model
                     canonical cause  ───────────────────────▶  exception list
                           │
                           ▼
-              TAXONOMY selects the action        ◀── +520%, deterministic, no model
+              TAXONOMY selects the action        ◀── +512%, deterministic, no model
                           │
                           ▼
               value-ordered under a budget       ◀── +18.5% over arrival order
@@ -91,6 +91,10 @@ Razorpay webhook ──▶ deterministic classifier (26 published codes, 0 model
                           ▼
               governance: contact caps, quiet hours,      ◀── ~0% revenue,
               suppression, append-only audit trail            hard guarantees
+                          │
+                          ▼
+              scheduled for the moment the cause    ◀── 48h after insufficient
+              implies, sent by an explicit tick         funds lands after payday
                           │
                           ▼
               Razorpay test-mode execution / outcome simulator
@@ -182,13 +186,31 @@ make test-all      # + integration (needs make db and make ollama)
 make lint
 ```
 
+### The console
+
+```bash
+make api           # API and console on :8010  (PORT= to change)
+make seed          # fill the database so there is something to look at
+```
+
+Then open **http://localhost:8010**.
+
+It reads the running system: the approval queue, the contacts scheduled but not
+yet sent, every action a stopping rule refused, and the append-only ledger. The
+evaluation figures on it come from `docs/evidence/evaluation.json`, which
+`make eval` writes from the same run that produces `EVALUATION.md` — so the page
+cannot quote a number the harness did not produce.
+
+Cases loaded by `make seed` are **simulated**, from `make data`. The one case
+that went through real Razorpay is marked as such.
+
 ### Receiving real webhooks
 
 Recoup runs against Razorpay **test mode** and refuses to start with a
 `rzp_live_` key.
 
 ```bash
-cloudflared tunnel --url http://localhost:8000
+cloudflared tunnel --url http://localhost:8010
 ```
 
 Point a Razorpay webhook at `https://<host>/webhooks/razorpay`, subscribe to

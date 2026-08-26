@@ -39,11 +39,14 @@ canonical cause  ◀────────────────────
 TAXONOMY selects the action           +512%   deterministic, no model
       │
       ▼
-value-ordered under a shared budget   +17%    vs working a queue in arrival order
+value-ordered under a shared budget   +18.5%  vs the same policy in arrival order
       │
       ▼
 policy gates                          caps · quiet hours · stopping rules ·
       │                               approval queue · suppression
+      ▼
+scheduled send                        cause-implied delay, then quiet hours
+      │                               deferred contacts drain on an explicit tick
       ▼
 idempotent execution                  unique (case_id, action_type, attempt_no)
       │

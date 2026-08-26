@@ -18,6 +18,7 @@ and Razorpay notifications are disabled on every link it creates.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -28,7 +29,7 @@ import razorpay
 
 from app.config import get_settings
 
-BASE = "http://localhost:8000"
+BASE = os.environ.get("RECOUP_API", "http://localhost:8000")
 POLL_SECONDS = 3
 POLL_TIMEOUT = 300
 
@@ -189,6 +190,31 @@ def main() -> None:
 
     action = actions[0]
     print(f"   action  {action['type']}  status={action['status']}")
+
+    # The allocator now schedules a customer contact for the moment the cause
+    # implies -- six hours after a hard decline, forty-eight after insufficient
+    # funds. That is correct and it is also longer than anyone will sit here, so
+    # the operator override sends it early. It is written to the ledger as a
+    # human decision; see `case.schedule_overridden` in the history below.
+    deferred = any(e["event"] == "case.action_deferred" for e in detail["ledger"])
+    if deferred:
+        due = next(
+            e["payload"] for e in reversed(detail["ledger"])
+            if e["event"] == "case.action_deferred"
+        )
+        print(f"   scheduled for {due['due_at']} ({due['waiting_h']}h away)")
+        print("   overriding the schedule, as an operator would for a demo")
+        pushed = _post("/tasks/execute-due?force=true&live=true")
+        print(f"   sent {pushed.get('sent')}, held for quiet hours "
+              f"{pushed.get('still_in_quiet_hours')}")
+        if pushed.get("still_in_quiet_hours"):
+            raise SystemExit(
+                "It is quiet hours in IST (21:00-09:00). The override does not "
+                "bypass those -- run this between 09:00 and 21:00 IST."
+            )
+        detail = _get(f"/actions/case/{case['id']}")
+        action = detail["actions"][0]
+
     if action["status"] == "pending_approval":
         print(f"   queued for a human: {action['approval_reason']}")
         print("   approving it now, as the reviewer would")

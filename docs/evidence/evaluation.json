@@ -1,0 +1,115 @@
+{
+  "arms": [
+    {
+      "arm": "B1_razorpay_t3",
+      "caused_cases": 223,
+      "contacts": 0,
+      "incremental_rupees": 1396480.67,
+      "net_rupees": 1396480.67,
+      "recovered_cases": 771,
+      "unnecessary_contacts": 0,
+      "within_budget": true
+    },
+    {
+      "arm": "B2_contact_everything",
+      "caused_cases": 289,
+      "contacts": 352,
+      "incremental_rupees": 1560620.79,
+      "net_rupees": 1560440.39,
+      "recovered_cases": 837,
+      "unnecessary_contacts": 28,
+      "within_budget": true
+    },
+    {
+      "arm": "B4_cause_aware (arrival)",
+      "caused_cases": 599,
+      "contacts": 570,
+      "incremental_rupees": 3169900.23,
+      "net_rupees": 3169537.18,
+      "recovered_cases": 1147,
+      "unnecessary_contacts": 84,
+      "within_budget": true
+    },
+    {
+      "arm": "RECOUP_allocator",
+      "caused_cases": 597,
+      "contacts": 567,
+      "incremental_rupees": 3707463.29,
+      "net_rupees": 3707092.19,
+      "recovered_cases": 973,
+      "unnecessary_contacts": 94,
+      "within_budget": true
+    },
+    {
+      "arm": "SILOED_per_channel_agents",
+      "caused_cases": 553,
+      "contacts": 462,
+      "incremental_rupees": 3670309.2,
+      "net_rupees": 3670090.85,
+      "recovered_cases": 1101,
+      "unnecessary_contacts": 57,
+      "within_budget": true
+    },
+    {
+      "arm": "B5_pooled + ranking",
+      "caused_cases": 594,
+      "contacts": 569,
+      "incremental_rupees": 3756261.41,
+      "net_rupees": 3755903.01,
+      "recovered_cases": 1142,
+      "unnecessary_contacts": 90,
+      "within_budget": true
+    }
+  ],
+  "at_risk_rupees": 15171629.29,
+  "budget_fraction": 0.25,
+  "contact_budget": 600,
+  "generated": "2026-08-26",
+  "levers": [
+    {
+      "contacts": 600,
+      "lever": "action",
+      "lift": 0.0,
+      "realised_rupees": 688021.96,
+      "variant": "fixed retry @ 24h"
+    },
+    {
+      "contacts": 600,
+      "lever": "action",
+      "lift": 3.865275593819709,
+      "realised_rupees": 3347416.45,
+      "variant": "fixed link @ 24h"
+    },
+    {
+      "contacts": 600,
+      "lever": "action",
+      "lift": 2.2860832959459607,
+      "realised_rupees": 2260897.47,
+      "variant": "retry @ cause-best time"
+    },
+    {
+      "contacts": 600,
+      "lever": "action",
+      "lift": 5.117393011699801,
+      "realised_rupees": 4208900.73,
+      "variant": "cause-aware action + timing"
+    },
+    {
+      "contacts": 600,
+      "lever": "ranking",
+      "lift": 0.0,
+      "realised_rupees": 4208900.73,
+      "variant": "amount ranked"
+    },
+    {
+      "contacts": 600,
+      "lever": "ranking",
+      "lift": 0.006733715480146285,
+      "realised_rupees": 4237242.27,
+      "variant": "EV ranked (oracle uplift)"
+    }
+  ],
+  "seed": 42,
+  "test_cases": 2400,
+  "world": "base"
+}

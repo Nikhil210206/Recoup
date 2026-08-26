@@ -14,10 +14,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.allocator.budget import BudgetPolicy
+from app.allocator.budget import IST, BudgetPolicy
 from app.allocator.estimator import AmountOnly
 from app.allocator.policy import Allocator
-from app.models import Action, ActionStatus, Case, CaseStatus
+from app.models import Action, ActionStatus, Case, CaseEvent, CaseStatus
 from app.services import actions as action_tools
 from app.services import live_allocator
 from app.simulation.outcomes import ActionType
@@ -62,18 +62,52 @@ def _webhook(client, payment_id: str, reason: str, source: str, amount: int, eve
 def _case(db, external_ref: str) -> Case:
     return db.query(Case).filter(Case.external_ref == external_ref).one()
 
+#: A fixed instant well outside quiet hours: 09:00 UTC is 14:30 IST.
+#:
+#: The live path genuinely behaves differently at 23:00 IST than at 14:00 --
+#: quiet hours defer customer contacts -- so a test that reads the wall clock
+#: passes all afternoon and fails at night. Anything whose subject is not the
+#: clock pins the clock.
+DAYTIME = datetime(2026, 8, 20, 9, 0, tzinfo=UTC)
+
+
+def _due(db, external_ref: str, hours: float = 72.0) -> Case:
+    """Back-date detection so a contact for this case is due to send.
+
+    Contacts are scheduled from when the payment failed, not from when the
+    allocator runs: 48 hours after an insufficient-funds failure lands after
+    payday, which is the entire point of the delay. So a case ingested a
+    millisecond ago is correctly *not* due yet, and any test whose subject is
+    something other than timing has to age the case first -- otherwise it is
+    testing the deferral no matter what its name says.
+    """
+    case = _case(db, external_ref)
+    # Anchored to DAYTIME, not to the case's own timestamp. The webhook stamps
+    # cases with the real wall clock, so subtracting from that leaves them dated
+    # after a pinned clock, and every contact is then correctly deferred -- which
+    # looks exactly like the bug these tests are not about.
+    case.detected_at = DAYTIME - timedelta(hours=hours)
+    db.commit()
+    return case
+
+
 
 class TestIdempotency:
     def test_repeated_allocation_executes_once(self, client, db_session):
         """The core guarantee. A tick that runs every five minutes must not send
         a customer a payment link every five minutes."""
         _webhook(client, "pay_IDEM1", "card_expired", "customer", 249900, "e_idem1")
+        _due(db_session, "pay_IDEM1")
 
-        first = live_allocator.allocate_and_execute(db_session, _allocator())
+        first = live_allocator.allocate_and_execute(
+            db_session, _allocator(), now=DAYTIME
+        )
         assert first["executed"] == 1
 
         for _ in range(4):
-            again = live_allocator.allocate_and_execute(db_session, _allocator())
+            again = live_allocator.allocate_and_execute(
+                db_session, _allocator(), now=DAYTIME
+            )
             assert again["executed"] == 0
 
         actions = db_session.query(Action).all()
@@ -191,7 +225,10 @@ class TestApprovalQueue:
 
     def test_a_small_amount_does_not(self, client, db_session):
         _webhook(client, "pay_APP2", "card_expired", "customer", 100_000, "e_app2")
-        result = live_allocator.allocate_and_execute(db_session, _allocator())
+        _due(db_session, "pay_APP2")
+        result = live_allocator.allocate_and_execute(
+            db_session, _allocator(), now=DAYTIME
+        )
         assert result["executed"] == 1
         assert result["queued_for_approval"] == 0
 
@@ -316,7 +353,10 @@ class TestExecutionSafety:
         real payment links every time it runs is one nobody can safely run
         twice."""
         _webhook(client, "pay_EXEC1", "card_expired", "customer", 249900, "e_exec1")
-        live_allocator.allocate_and_execute(db_session, _allocator(), live=False)
+        _due(db_session, "pay_EXEC1")
+        live_allocator.allocate_and_execute(
+            db_session, _allocator(), live=False, now=DAYTIME
+        )
 
         action = db_session.query(Action).one()
         assert action.status == ActionStatus.EXECUTED
@@ -335,7 +375,10 @@ class TestExecutionSafety:
         """If an action happened there is a row, and if there is a row one of
         these functions produced it."""
         _webhook(client, "pay_EXEC3", "card_expired", "customer", 249900, "e_exec3")
-        live_allocator.allocate_and_execute(db_session, _allocator())
+        _due(db_session, "pay_EXEC3")
+        live_allocator.allocate_and_execute(
+            db_session, _allocator(), now=DAYTIME
+        )
 
         case = _case(db_session, "pay_EXEC3")
         events = [e.event_type for e in case.events]
@@ -579,9 +622,10 @@ class TestFailedActionsDoNotEarnCredit:
     ):
         self._break_razorpay(monkeypatch)
         _webhook(client, "pay_FAILEX1", "card_expired", "customer", 249900, "e_failex1")
+        _due(db_session, "pay_FAILEX1")
 
         result = live_allocator.allocate_and_execute(
-            db_session, _allocator(), live=True
+            db_session, _allocator(), live=True, now=DAYTIME
         )
         assert result["executed"] == 0
         assert result["failed_to_execute"] == 1
@@ -623,7 +667,10 @@ class TestFailedActionsDoNotEarnCredit:
     ):
         self._break_razorpay(monkeypatch)
         _webhook(client, "pay_FAILEX3", "card_expired", "customer", 249900, "e_failex3")
-        live_allocator.allocate_and_execute(db_session, _allocator(), live=True)
+        _due(db_session, "pay_FAILEX3")
+        live_allocator.allocate_and_execute(
+            db_session, _allocator(), live=True, now=DAYTIME
+        )
 
         case = _case(db_session, "pay_FAILEX3")
         events = [e.event_type for e in case.events]
@@ -659,3 +706,164 @@ class TestRazorpayFieldLimits:
         assert len(captured["reference_id"]) <= 40
         # Still has to be unique per case, or two cases collide in Razorpay.
         assert case.id.replace("-", "")[:20] in captured["reference_id"]
+
+
+class TestDeferredContacts:
+    """Two rules that were computed, recorded, and then ignored.
+
+    The allocator chose a send time for every customer contact -- a per-cause
+    delay, shifted again if it landed inside quiet hours -- and wrote the
+    deciding rule onto the action. The executor then sent immediately. The
+    ledger said `quiet_hours`; the payment link went out at 00:36 IST.
+
+    Both failures were invisible for the same reason: the recorded decision was
+    correct. Only the behaviour was wrong, and nothing compared the two.
+    """
+
+    def test_a_contact_is_not_sent_before_its_cause_says_it_should_be(
+        self, client, db_session
+    ):
+        """The per-cause delay is half of "cause-aware action *and* timing".
+
+        Insufficient funds waits 48 hours so the retry lands after payday. The
+        live path sent it immediately, which is not the system the evaluation
+        measured.
+        """
+        _webhook(
+            client, "pay_DEFER1", "payment_failed", "bank", 249900, "e_defer1"
+        )
+        result = live_allocator.allocate_and_execute(
+            db_session, _allocator(), now=DAYTIME
+        )
+
+        assert result["executed"] == 0
+        assert result["deferred"] == 1
+
+        action = db_session.query(Action).one()
+        assert action.status != ActionStatus.EXECUTED
+        assert action.scheduled_for is not None
+        assert action.scheduled_for > DAYTIME
+
+    def test_the_deferral_is_recorded_with_its_due_time(self, client, db_session):
+        _webhook(client, "pay_DEFER2", "card_expired", "customer", 249900, "e_defer2")
+        live_allocator.allocate_and_execute(db_session, _allocator(), now=DAYTIME)
+
+        case = _case(db_session, "pay_DEFER2")
+        deferred = [e for e in case.events if e.event_type == "case.action_deferred"]
+        assert len(deferred) == 1
+        assert "due_at" in deferred[0].payload
+        assert deferred[0].payload["waiting_h"] > 0
+
+    def test_a_due_contact_inside_quiet_hours_still_waits(self, client, db_session):
+        """23:30 IST. The case is long overdue; the customer is asleep."""
+        _webhook(client, "pay_DEFER3", "card_expired", "customer", 249900, "e_defer3")
+        _due(db_session, "pay_DEFER3")
+
+        night = datetime(2026, 8, 20, 18, 0, tzinfo=UTC)  # 23:30 IST
+        result = live_allocator.allocate_and_execute(
+            db_session, _allocator(), now=night
+        )
+
+        assert result["executed"] == 0
+        assert result["deferred"] == 1
+        action = db_session.query(Action).one()
+        assert action.scheduled_for.astimezone(IST).hour == 9
+
+    def test_a_retry_is_never_deferred_for_quiet_hours(self, client, db_session):
+        """Retries touch the gateway, not a person.
+
+        This is the inversion that made the bug so hard to see: quiet hours were
+        being honoured on retries, which never needed protecting, and ignored on
+        contacts, which did.
+        """
+        _webhook(
+            client, "pay_DEFER4", "bank_technical_error", "bank", 249900, "e_defer4"
+        )
+        night = datetime(2026, 8, 20, 18, 0, tzinfo=UTC)  # 23:30 IST
+        result = live_allocator.allocate_and_execute(
+            db_session, _allocator(), now=night
+        )
+
+        assert result["deferred"] == 0
+        assert result["executed"] == 1
+
+    def test_the_tick_sends_a_contact_once_it_comes_due(self, client, db_session):
+        """A deferral only differs from a silent drop if something sends it later."""
+        _webhook(client, "pay_DEFER5", "card_expired", "customer", 249900, "e_defer5")
+        live_allocator.allocate_and_execute(db_session, _allocator(), now=DAYTIME)
+
+        action = db_session.query(Action).one()
+        assert action.scheduled_for is not None
+
+        # The moment arrives.
+        action.scheduled_for = datetime.now(UTC) - timedelta(minutes=1)
+        db_session.commit()
+
+        result = live_allocator.execute_due(db_session, live=False)
+        db_session.refresh(action)
+
+        if result["still_in_quiet_hours"]:
+            # Running the suite at night: the contact is correctly held, not sent.
+            assert result["sent"] == 0
+            assert action.status != ActionStatus.EXECUTED
+        else:
+            assert result["sent"] == 1
+            assert action.status == ActionStatus.EXECUTED
+            assert action.scheduled_for is None
+
+
+class TestScheduleOverride:
+    """An operator may send ahead of the cause-implied delay. Not silently."""
+
+    def _defer_one(self, client, db_session, ref: str, event: str) -> Action:
+        _webhook(client, ref, "card_expired", "customer", 249900, event)
+        live_allocator.allocate_and_execute(db_session, _allocator(), now=DAYTIME)
+        action = db_session.query(Action).filter(Action.scheduled_for.is_not(None)).one()
+        return action
+
+    def test_without_force_a_contact_that_is_not_due_is_left_alone(
+        self, client, db_session
+    ):
+        action = self._defer_one(client, db_session, "pay_OVR1", "e_ovr1")
+        # Same clock as the allocation. execute_due reading the real wall clock
+        # while the plan was made at a pinned instant makes every action look
+        # long overdue, which is not what this test is about.
+        result = live_allocator.execute_due(db_session, live=False, now=DAYTIME)
+        db_session.refresh(action)
+
+        assert result["sent"] == 0
+        assert action.status != ActionStatus.EXECUTED
+
+    def test_force_sends_early_and_records_who_did_it(self, client, db_session):
+        action = self._defer_one(client, db_session, "pay_OVR2", "e_ovr2")
+        case_id = action.case_id
+        result = live_allocator.execute_due(
+            db_session, live=False, force=True, now=DAYTIME
+        )
+
+        if result["still_in_quiet_hours"]:
+            # Suite running at night. Force must not punch through quiet hours.
+            assert result["sent"] == 0
+            return
+
+        assert result["sent"] == 1
+        events = [
+            e.event_type
+            for e in db_session.query(CaseEvent).filter(CaseEvent.case_id == case_id)
+        ]
+        assert "case.schedule_overridden" in events, (
+            "an override nobody can see afterwards is indistinguishable from the "
+            "bug this scheduling was added to fix"
+        )
+
+    def test_force_does_not_bypass_quiet_hours(self, client, db_session):
+        """The delay is an optimisation. Quiet hours are about a person asleep."""
+        self._defer_one(client, db_session, "pay_OVR3", "e_ovr3")
+
+        night = datetime(2026, 8, 20, 18, 0, tzinfo=UTC)  # 23:30 IST
+        result = live_allocator.execute_due(
+            db_session, live=False, force=True, now=night
+        )
+
+        assert result["sent"] == 0
+        assert result["still_in_quiet_hours"] == 1

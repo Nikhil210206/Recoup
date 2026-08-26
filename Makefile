@@ -1,4 +1,4 @@
-.PHONY: help venv install db db-down api data data-worlds assumptions arms arms-worlds classifier-eval ollama model allocate live-demo real-loop eval test test-all lint fmt clean
+.PHONY: help venv install db db-down api seed console data data-worlds assumptions arms arms-worlds classifier-eval ollama model allocate live-demo real-loop eval test test-all lint fmt clean
 
 PY := backend/.venv/bin/python
 PIP := backend/.venv/bin/pip
@@ -8,7 +8,8 @@ help:
 	@echo ""
 	@echo "  make install    create venv and install backend deps"
 	@echo "  make db         start Postgres (docker compose)"
-	@echo "  make api        run the FastAPI server on :8000"
+	@echo "  make api        run the API and console on :8010 (PORT= to change)"
+	@echo "  make seed       fill the database so the console has something to show"
 	@echo "  make data       generate the synthetic dataset (seed 42, base world)"
 	@echo "  make data-worlds generate all three world parameterisations"
 	@echo "  make assumptions regenerate data/ASSUMPTIONS.md from code"
@@ -43,7 +44,7 @@ db-down:
 	docker compose down
 
 api:
-	cd backend && .venv/bin/uvicorn app.main:app --reload --port 8000
+	cd backend && .venv/bin/uvicorn app.main:app --reload --port $(or $(PORT),8010)
 
 data:
 	cd backend && .venv/bin/python -m app.simulation.cli --seed $(or $(SEED),42) --world base
@@ -78,11 +79,17 @@ model:
 allocate:
 	cd backend && .venv/bin/python -m app.allocator.cli --world $(or $(WORLD),base) --budget $(or $(BUDGET),600)
 
+seed:
+	cd backend && .venv/bin/python -m app.scripts.seed_console -n $(or $(N),400)
+
+console:
+	@echo "open http://localhost:$(or $(PORT),8010)"
+
 live-demo:
-	cd backend && .venv/bin/python -m app.scripts.live_demo
+	cd backend && RECOUP_API=http://localhost:$(or $(PORT),8010) .venv/bin/python -m app.scripts.live_demo
 
 real-loop:
-	cd backend && .venv/bin/python -m app.scripts.real_loop
+	cd backend && RECOUP_API=http://localhost:$(or $(PORT),8010) .venv/bin/python -m app.scripts.real_loop
 
 eval:
 	cd backend && .venv/bin/python -m app.evaluation.harness --world $(or $(WORLD),base) --seed $(or $(SEED),42) --write

@@ -34,8 +34,26 @@ def get_db() -> Iterator[Session]:
         db.close()
 
 
+#: Columns added after a database was first created.
+#:
+#: `create_all` creates missing tables but never alters an existing one, so a
+#: developer database from before a column existed comes back up silently
+#: missing it and fails at query time instead of at startup. Each entry is
+#: idempotent; this list goes away when Alembic takes over.
+_ADDITIVE_COLUMNS = (
+    "ALTER TABLE actions ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMPTZ",
+    "CREATE INDEX IF NOT EXISTS ix_actions_scheduled_for ON actions (scheduled_for)",
+)
+
+
 def init_db() -> None:
     """Create tables. Alembic takes over once the schema stabilises."""
+    from sqlalchemy import text
+
     from app import models  # noqa: F401  (import registers the mappers)
 
     Base.metadata.create_all(bind=engine)
+
+    with engine.begin() as conn:
+        for statement in _ADDITIVE_COLUMNS:
+            conn.execute(text(statement))

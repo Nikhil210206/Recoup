@@ -15,13 +15,17 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import time
 import urllib.error
 import urllib.request
 
 from app.config import get_settings
 
-BASE = "http://localhost:8000"
+#: 8000 is a common default and was already taken by another local project on
+#: the machine this was built on. Overridable rather than hardcoded, for the
+#: same reason the database port is.
+BASE = os.environ.get("RECOUP_API", "http://localhost:8000")
 
 #: Chosen so each row exercises a different branch of the decision tree.
 SCENARIOS = [

@@ -94,13 +94,13 @@ class TestDatasetClaims:
 
 class TestHeadlineLever:
     def test_action_selection_lift(self, test_slice):
-        """The project's largest claim: ~+520% for cause-aware action and timing."""
+        """The project's largest claim: cause-aware action and timing."""
         results = compare(test_slice, budget=int(len(test_slice) * BUDGET_FRACTION))
         lift = max(r.lift for r in results if r.lever == "action")
-        assert 5.0 < lift < 5.5, f"README says ~+524%, measured {lift:+.0%}"
+        assert 5.0 < lift < 5.5, f"README says ~+512%, measured {lift:+.0%}"
 
     def test_action_lift_holds_in_every_world(self):
-        """README claims +519% to +529% across worlds."""
+        """README claims +506% to +517% across worlds."""
         for world in WORLDS:
             cases = load(world, 42)
             slice_ = cases[cases.split == "test"].reset_index(drop=True)
@@ -118,7 +118,7 @@ class TestAllocatorClaims:
     def test_value_ordering_lift(self, controls):
         _, arrival, pooled, _ = controls
         lift = (pooled.incremental_paise - arrival.incremental_paise) / arrival.incremental_paise
-        assert 0.14 < lift < 0.24, f"README says +18.5%, measured {lift:+.1%}"
+        assert 0.14 < lift < 0.24, f"README quotes this figure; measured {lift:+.1%}"
 
     def test_allocator_is_within_noise_of_siloed_agents(self, controls):
         """The honest ~0. README states it plainly; this stops it drifting into
@@ -285,4 +285,92 @@ class TestNoDriftBetweenDocsAndHarness:
         # The README quotes this to the nearest whole percent.
         assert f"+{measured * 100:.0f}%" in readme, (
             f"README does not quote the measured lever lift of {measured:+.0%}"
+        )
+
+
+class TestDocumentsAgreeWithEachOther:
+    """Both documents quote the same measurements. They must quote them alike.
+
+    The existing checks assert a measured value falls inside a range and that
+    the README mentions the right number *somewhere*. Neither notices a second,
+    different number for the same claim: the README's diagram said +520% while
+    its own table said +512%, and the value-ordering figure read +18.5% in the
+    README and +17% in ARCHITECTURE. Every test passed. The ranges were wide
+    enough to contain both, and "is this number present" cannot detect that a
+    contradicting one is present too.
+    """
+
+    DOCS = ("README.md", "ARCHITECTURE.md")
+
+    def _text(self, name: str) -> str:
+        return (README.parent / name).read_text()
+
+    def _measured_action_lift(self) -> float:
+        from app.evaluation import BUDGET_FRACTION
+        from app.model.levers import compare
+
+        cases = load("base", 42)
+        test = cases[cases.split == "test"].reset_index(drop=True)
+        results = compare(test, int(len(test) * BUDGET_FRACTION))
+        return max(r.lift for r in results if r.lever == "action")
+
+    def test_every_large_percentage_matches_something_measured(self):
+        """No document may quote a hundreds-of-percent figure nothing produces.
+
+        These documents legitimately contain several: the other lever variants
+        (+229%, +386%) and the range across worlds (+506% to +517%). So the
+        check is not "is it the headline" but "is it *any* lift a fresh run
+        produces". A leftover +520% from a previous budget setting matches
+        nothing and fails, which is exactly how it survived before -- every
+        range was wide enough to contain it and no test compared it to a run.
+        """
+        import re
+
+        from app.evaluation import BUDGET_FRACTION
+
+        measured: set[float] = set()
+        for world in WORLDS:
+            cases = load(world, 42)
+            slice_ = cases[cases.split == "test"].reset_index(drop=True)
+            for result in compare(slice_, int(len(slice_) * BUDGET_FRACTION)):
+                if result.lift > 0.5:
+                    measured.add(result.lift * 100)
+
+        for name in self.DOCS:
+            for match in re.findall(r"\+(\d{3})%", self._text(name)):
+                quoted = float(match)
+                assert any(abs(quoted - m) < 1.0 for m in measured), (
+                    f"{name} quotes +{match}%, which no fresh run reproduces; "
+                    f"measured lifts are {sorted(round(m) for m in measured)}"
+                )
+
+    def test_both_documents_quote_the_same_value_ordering_lift(self, controls):
+        """The value-ordering figure, stated in two places.
+
+        Note which arms this compares. Ordering alone is `pooled+ranked` against
+        `arrival` -- the same policy, differing only in queue order. The
+        allocator against arrival is +17%, because it also pays for contact
+        caps, and the two were quoted interchangeably under one label.
+        """
+        import re
+
+        _, arrival, pooled, _ = controls
+        measured = (
+            pooled.incremental_paise - arrival.incremental_paise
+        ) / arrival.incremental_paise
+
+        quoted = set()
+        for name in self.DOCS:
+            for match in re.finditer(
+                r"\+(\d+(?:\.\d+)?)%[^\n]*arrival order", self._text(name)
+            ):
+                quoted.add(float(match.group(1)))
+
+        assert quoted, "neither document states the value-ordering lift"
+        assert len(quoted) == 1, (
+            "the documents quote different figures for the same comparison: "
+            f"{sorted(quoted)}"
+        )
+        assert abs(quoted.pop() - measured * 100) < 0.6, (
+            f"documents disagree with a fresh run, which measures {measured:+.1%}"
         )

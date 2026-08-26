@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,6 +50,12 @@ class Report:
 
     def __init__(self) -> None:
         self.sections: list[tuple[str, str]] = []
+        #: Structured mirror of the numbers rendered into the sections above.
+        #:
+        #: The dashboard reads this rather than restating results in markup. A
+        #: number typed into a template is a number that can drift from the
+        #: harness that produced it, and there is no test that would catch it.
+        self.facts: dict = {}
 
     def add(self, title: str, body: str) -> None:
         self.sections.append((title, body))
@@ -97,10 +104,33 @@ def run(world: str, seed: int) -> tuple[Report, dict]:
         "generated": datetime.now(UTC).strftime("%Y-%m-%d"),
     }
 
+    report.facts.update(
+        {
+            "world": world,
+            "seed": seed,
+            "budget_fraction": BUDGET_FRACTION,
+            "test_cases": int(len(test)),
+            "contact_budget": budget,
+            "at_risk_rupees": float(test.amount_paise.sum() / 100),
+            "generated": meta["generated"],
+        }
+    )
+
     # --- 1. the headline: which decision recovers the money -----------------
+    levers = compare_levers(test, budget)
+    report.facts["levers"] = [
+        {
+            "lever": r.lever,
+            "variant": r.variant,
+            "realised_rupees": r.realised_paise / 100,
+            "lift": r.lift,
+            "contacts": r.contacts,
+        }
+        for r in levers
+    ]
     report.add(
         "1. Which decision recovers the money",
-        render_levers(compare_levers(test, budget))
+        render_levers(levers)
         + "\n\n"
         + "  'action' holds case selection fixed and varies what we do.\n"
         + "  'ranking' holds the action fixed and varies which cases we work,\n"
@@ -135,8 +165,11 @@ def run(world: str, seed: int) -> tuple[Report, dict]:
     pooled = next(
         r.result
         for r in run_bake_off(
-            ranked(test), allocator(99), {"B5_pooled + ranking": CauseAware()},
-            budget, fatigue,
+            ranked(test),
+            allocator(99),
+            {"B5_pooled + ranking": CauseAware()},
+            budget,
+            fatigue,
         )
         if r.result.arm.startswith("B5")
     )
@@ -145,6 +178,19 @@ def run(world: str, seed: int) -> tuple[Report, dict]:
     results.append(BudgetedResult(siloed, budget, siloed.contacts))
     results.append(BudgetedResult(pooled, budget, pooled.contacts))
 
+    report.facts["arms"] = [
+        {
+            "arm": b.result.arm,
+            "incremental_rupees": b.result.incremental_paise / 100,
+            "net_rupees": b.result.net_paise / 100,
+            "contacts": b.result.contacts,
+            "unnecessary_contacts": b.result.unnecessary_contacts,
+            "recovered_cases": b.result.recovered_cases,
+            "caused_cases": b.result.caused_cases,
+            "within_budget": b.within_budget,
+        }
+        for b in results
+    ]
     report.add(
         "2. Every arm under an identical contact budget",
         render_bake_off(results, budget)
@@ -168,14 +214,12 @@ def run(world: str, seed: int) -> tuple[Report, dict]:
     for label, est, cap in ablation:
         result = run_bake_off(
             test,
-            Allocator(
-                estimator=est, budget_policy=BudgetPolicy(max_contacts_per_customer=cap)
-            ),
-            {}, budget, fatigue,
+            Allocator(estimator=est, budget_policy=BudgetPolicy(max_contacts_per_customer=cap)),
+            {},
+            budget,
+            fatigue,
         )[0].result
-        lines.append(
-            f"  {label:34}{result.incremental_paise / 100:>16,.0f}{result.contacts:>10,}"
-        )
+        lines.append(f"  {label:34}{result.incremental_paise / 100:>16,.0f}{result.contacts:>10,}")
     try:
         import joblib
 
@@ -187,7 +231,9 @@ def run(world: str, seed: int) -> tuple[Report, dict]:
                     estimator=ModelUplift(joblib.load(model_path)),
                     budget_policy=BudgetPolicy(max_contacts_per_customer=2),
                 ),
-                {}, budget, fatigue,
+                {},
+                budget,
+                fatigue,
             )[0].result
             lines.append(
                 f"  {'per-case ML uplift model':34}"
@@ -213,9 +259,7 @@ def run(world: str, seed: int) -> tuple[Report, dict]:
     # --- 4. significance ----------------------------------------------------
     arm_results = {r.result.arm: r.result for r in results}
     t3 = evaluate(test, BASELINES[1], fatigue)
-    sig_lines = [
-        f"  {'arm':34}{'mean diff/case':>16}{'95% CI':>22}{'significant':>13}"
-    ]
+    sig_lines = [f"  {'arm':34}{'mean diff/case':>16}{'95% CI':>22}{'significant':>13}"]
     sig_lines.append("  " + "-" * 84)
     for name, result in arm_results.items():
         if "t3" in name:
@@ -242,9 +286,7 @@ def run(world: str, seed: int) -> tuple[Report, dict]:
         f"  {'arm':34}{'% of ceiling':>14}",
         "  " + "-" * 48,
     ]
-    for name, result in sorted(
-        arm_results.items(), key=lambda kv: -kv[1].incremental_paise
-    ):
+    for name, result in sorted(arm_results.items(), key=lambda kv: -kv[1].incremental_paise):
         pct = 100 * result.incremental_paise / max(ceiling.incremental_paise, 1)
         ceil_lines.append(f"  {name:34}{pct:>13.1f}%")
     ceil_lines += [
@@ -272,21 +314,17 @@ def run(world: str, seed: int) -> tuple[Report, dict]:
         w_est = CauseRate().fit(build_frames(name, seed)["train"])
         w_results = run_bake_off(
             w_test,
-            Allocator(
-                estimator=w_est, budget_policy=BudgetPolicy(max_contacts_per_customer=2)
-            ),
+            Allocator(estimator=w_est, budget_policy=BudgetPolicy(max_contacts_per_customer=2)),
             {"arrival": CauseAware()},
             w_budget,
             w_fatigue,
         )
         alloc = next(r.result for r in w_results if r.result.arm == "RECOUP_allocator")
         arrival = next(r.result for r in w_results if r.result.arm == "arrival")
-        delta = (
-            alloc.incremental_paise - arrival.incremental_paise
-        ) / max(arrival.incremental_paise, 1)
-        world_lines.append(
-            f"  {name:16}{action:>+14.0%}{rank:>+15.1%}{delta:>+21.1%}"
+        delta = (alloc.incremental_paise - arrival.incremental_paise) / max(
+            arrival.incremental_paise, 1
         )
+        world_lines.append(f"  {name:16}{action:>+14.0%}{rank:>+15.1%}{delta:>+21.1%}")
     world_lines += [
         "",
         "  Worlds hold the SAME failures and vary only how recoverable they are,",
@@ -332,6 +370,13 @@ def main() -> None:
         path = REPO / "EVALUATION.md"
         path.write_text(report.to_markdown(meta))
         print(f"\nwrote {path.relative_to(REPO)}")
+
+        # The same numbers, machine-readable, for anything that renders them.
+        # Written from the identical run, so the dashboard and the document
+        # cannot disagree about what the experiment found.
+        sidecar = REPO / "docs" / "evidence" / "evaluation.json"
+        sidecar.write_text(json.dumps(report.facts, indent=2, sort_keys=True) + "\n")
+        print(f"wrote {sidecar.relative_to(REPO)}")
 
 
 if __name__ == "__main__":

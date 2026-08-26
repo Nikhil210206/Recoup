@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Recoup — the revenue recovery control plane</title>
+<meta name="description" content="Razorpay's error taxonomy already knows the right recovery action. Recoup uses it." />
+<link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+
+<nav class="nav" aria-label="Sections">
+  <a href="#evidence"><span>Evidence</span><i></i></a>
+  <a href="#taxonomy"><span>Taxonomy</span><i></i></a>
+  <a href="#worth"><span>What it's worth</span><i></i></a>
+  <a href="#refused"><span>What we refused</span><i></i></a>
+  <a href="#console"><span>Console</span><i></i></a>
+</nav>
+
+<main>
+
+<!-- ── hero ─────────────────────────────────────────────────────────── -->
+<section class="hero" id="top">
+  <div class="wrap">
+    <p class="eyebrow reveal">Recoup · revenue recovery control plane</p>
+    <h1 class="reveal" data-d="1">Razorpay's error taxonomy already knows the right recovery action.</h1>
+    <p class="sub reveal" data-d="2">Almost nobody uses it. Most recovery systems retry — whatever the failure actually was.</p>
+    <div class="markline"></div>
+    <div class="reveal" data-d="3">
+      <span class="chip"><span class="dot live"></span> One real recovery through Razorpay test mode · <span class="num" id="hero-amount">—</span></span>
+    </div>
+  </div>
+</section>
+
+<!-- ── act 1: the real recovery ─────────────────────────────────────── -->
+<section id="evidence">
+  <div class="wrap">
+    <p class="eyebrow reveal">01 — Evidence</p>
+    <h2 class="reveal serif" data-d="1">One payment failed. Forty-eight seconds later it was paid.</h2>
+    <p class="lead narrow reveal" data-d="2">
+      Not a simulation. A real payment through Razorpay test mode, recovered by
+      an action this system chose on its own. Every line below is read from the
+      append-only ledger — nothing here is written for display.
+    </p>
+    <div class="rail" id="story"><p class="load">Loading the ledger…</p></div>
+    <div class="note reveal small" id="story-note"></div>
+  </div>
+</section>
+
+<!-- ── act 2: the taxonomy ──────────────────────────────────────────── -->
+<section id="taxonomy">
+  <div class="wrap">
+    <p class="eyebrow reveal">02 — The taxonomy</p>
+    <h2 class="reveal serif" data-d="1">The answer was in the webhook the whole time.</h2>
+    <p class="lead narrow reveal" data-d="2">
+      Every failed payment Razorpay sends you carries four fields describing
+      exactly why it failed. Read them, and the right recovery action follows.
+      Ignore them, and every failure looks the same — so every response is the same.
+    </p>
+
+    <div class="grid g3 reveal" data-d="3" style="margin-top:44px">
+      <div class="cell">
+        <p class="eyebrow" style="margin-bottom:16px">What Razorpay sent</p>
+        <dl class="kv" id="tax-fields"></dl>
+      </div>
+      <div class="cell">
+        <p class="eyebrow" style="margin-bottom:16px">What it means</p>
+        <div id="tax-cause"></div>
+      </div>
+      <div class="cell">
+        <p class="eyebrow" style="margin-bottom:16px">What follows</p>
+        <div id="tax-action"></div>
+      </div>
+    </div>
+
+    <div class="note reveal small" data-d="4">
+      <p style="margin:0">
+        A hard decline means the issuing bank refused the card outright. Retrying
+        it hits the same bank with the same card and gets the same answer — which
+        is why the taxonomy points at a <strong>different payment method</strong>,
+        not a second attempt. The classifier reached this deterministically, with
+        no model involved.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ── act 3: what it's worth ───────────────────────────────────────── -->
+<section id="worth">
+  <div class="wrap">
+    <p class="eyebrow reveal">03 — What it's worth</p>
+    <h2 class="reveal serif" data-d="1">Choosing the action beats choosing the case.</h2>
+    <p class="lead narrow reveal" data-d="2">
+      Measured on <span class="num" id="w-cases">—</span> held-out simulated cases under an
+      identical contact budget of <span class="num" id="w-budget">—</span>. Every arm works the same
+      cases and spends the same contacts, so the only variable is the decision.
+    </p>
+
+    <div class="bars reveal" data-d="3" id="lever-action"></div>
+    <p class="small muted reveal" style="margin-top:14px">
+      Baseline: a fixed retry at 24 hours — Razorpay's own documented subscription
+      retry policy, and what most recovery tooling does by default.
+    </p>
+
+    <h3 class="reveal" style="margin-top:72px">And ranking the queue is worth almost nothing.</h3>
+    <div class="bars reveal" data-d="1" id="lever-ranking"></div>
+    <p class="small muted reveal" style="margin-top:14px">
+      Ranking by expected value instead of by amount — using <em>oracle</em> uplift,
+      the ceiling rather than our estimate. Amounts span roughly 5,000× while uplift
+      spans 5×, so the product barely reorders the queue.
+    </p>
+  </div>
+</section>
+
+<!-- ── act 4: negative results ──────────────────────────────────────── -->
+<section id="refused">
+  <div class="wrap">
+    <p class="eyebrow reveal">04 — What we refused to build</p>
+    <h2 class="reveal serif" data-d="1">Three things that didn't work, kept in.</h2>
+    <p class="lead narrow reveal" data-d="2">
+      These are measurements that went against the design. Removing them would
+      have made the numbers above look better and mean less.
+    </p>
+
+    <div class="grid g3 reveal" data-d="3" style="margin-top:44px">
+      <div class="cell">
+        <h3>A per-case ML model lost to a group-by</h3>
+        <p class="small">
+          A gradient-boosted uplift model, properly calibrated, came in
+          <strong>24% worse</strong> than a twenty-row average over cause and action.
+          The model stayed out of the decision path.
+        </p>
+      </div>
+      <div class="cell">
+        <h3>The allocator is worth ~0 on revenue</h3>
+        <p class="small">
+          Against a pooled agent handed a value-sorted queue it wins by about
+          <strong>1%</strong>. It is in the system as a governance layer — budgets,
+          quiet hours, approval — not as a revenue engine, and it is reported that way.
+        </p>
+      </div>
+      <div class="cell">
+        <h3>The model can't beat the noise floor</h3>
+        <p class="small">
+          Outcomes are Bernoulli draws, so ROC-AUC here is capped at
+          <strong>0.637</strong>. Ours reaches 0.620 — 88% of what is achievable.
+          The remaining gap is not signal anyone can capture.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── act 5: live console ──────────────────────────────────────────── -->
+<section id="console">
+  <div class="wrap">
+    <p class="eyebrow reveal">05 — Console</p>
+    <h2 class="reveal serif" data-d="1">What it did, and what it refused to do.</h2>
+    <p class="lead narrow reveal" data-d="2">
+      Live, from the database behind this page. The panel that matters most is the
+      second one — and it separates three things that are easy to conflate: actions
+      never planned, actions planned and then declined, and actions merely postponed.
+    </p>
+
+    <div class="grid g3 reveal" data-d="3" id="overview" style="margin-top:44px">
+      <div class="cell load">Loading…</div>
+    </div>
+
+    <div class="panel reveal" style="margin-top:26px">
+      <header>
+        <h3>Awaiting human approval</h3>
+        <span class="small muted">High value, or a cause we weren't confident about</span>
+      </header>
+      <div id="queue"><p class="load">Loading…</p></div>
+    </div>
+
+    <div class="panel reveal" style="margin-top:26px">
+      <header>
+        <h3>Decided, deliberately not sent yet</h3>
+        <span class="small muted">The cause implies a better moment, or the customer is asleep</span>
+      </header>
+      <div id="scheduled"><p class="load">Loading…</p></div>
+    </div>
+
+    <div class="panel reveal" style="margin-top:26px">
+      <header>
+        <h3>What the system did not simply do</h3>
+        <span class="small muted">Never planned · planned then declined · postponed</span>
+      </header>
+      <div id="rules"><p class="load">Loading…</p></div>
+    </div>
+
+    <div class="panel reveal" style="margin-top:26px">
+      <header>
+        <h3>Ledger</h3>
+        <span class="small muted">Append-only · never updated, never deleted</span>
+      </header>
+      <div class="led" id="ledger"><p class="load">Loading…</p></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p style="margin:0">
+      Every figure on this page is read from the running system or from
+      <span class="mono">docs/evidence/evaluation.json</span>, regenerated by
+      <span class="mono">make eval</span>. Benchmark figures are simulated and
+      labelled as such; the recovery in section 01 is real.
+    </p>
+  </div>
+</footer>
+
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

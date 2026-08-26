@@ -20,14 +20,15 @@ handle, and the reason it is testable is that it has neither.
 
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.allocator.budget import IST
+from app.allocator.budget import IST, BudgetPolicy
 from app.allocator.policy import Allocator, Decision
 from app.models import Action, ActionStatus, Case, CaseEvent, CaseStatus
 from app.services import actions as action_tools
@@ -56,6 +57,20 @@ TERMINAL = {
 class StopRule:
     name: str
     reason: str
+
+
+class Outcome(enum.StrEnum):
+    """What happened to a claimed action.
+
+    `DEFERRED` exists because it is neither of the other two. Folding it into
+    EXECUTED would report a contact that has not happened; folding it into
+    FAILED would report an error where the system did exactly what its own
+    policy asked. The distinction is the whole point of a deferral.
+    """
+
+    EXECUTED = "executed"
+    DEFERRED = "deferred"
+    FAILED = "failed"
 
 
 def check_stopping_rules(db: Session, case: Case, now: datetime) -> StopRule | None:
@@ -206,9 +221,7 @@ def to_frame(cases: list[Case], db: Session | None = None) -> pd.DataFrame:
     diverged, every measured number would stop describing what actually runs.
     """
     now = datetime.now(UTC)
-    history = (
-        customer_history(db, [c.customer_id for c in cases]) if db is not None else {}
-    )
+    history = customer_history(db, [c.customer_id for c in cases]) if db is not None else {}
 
     rows = []
     for case in cases:
@@ -270,14 +283,20 @@ def allocate_and_execute(
     *,
     limit: int = 500,
     live: bool = False,
+    now: datetime | None = None,
 ) -> dict:
     """Plan over the open cases and execute what survives every gate.
 
     `live=False` records actions without calling Razorpay, which is the default.
     An allocation pass that creates real payment links every time it runs is one
     nobody can safely run twice.
+
+    `now` is injectable so behaviour that depends on the clock can be tested at a
+    chosen instant. Quiet hours mean this path genuinely behaves differently at
+    23:00 IST than at 14:00, and a test that reads the wall clock passes all
+    afternoon and fails at night.
     """
-    now = datetime.now(UTC)
+    now = now or datetime.now(UTC)
     candidates = open_cases(db, limit=limit)
     if not candidates:
         return {"considered": 0, "planned": 0, "executed": 0, "stopped": {}, "queued": 0}
@@ -306,13 +325,18 @@ def allocate_and_execute(
     db.commit()
 
     if not eligible:
-        return {"considered": len(candidates), "planned": 0, "executed": 0,
-                "stopped": stopped, "queued": 0}
+        return {
+            "considered": len(candidates),
+            "planned": 0,
+            "executed": 0,
+            "stopped": stopped,
+            "queued": 0,
+        }
 
     by_id = {c.id: c for c in eligible}
     decisions, ledger_state = allocator.plan(to_frame(eligible, db), now=now)
 
-    executed = queued = suppressed = failed = 0
+    executed = queued = suppressed = failed = deferred = 0
     for decision in decisions:
         case = by_id.get(decision.case_id)
         if case is None:
@@ -339,8 +363,11 @@ def allocate_and_execute(
             queued += 1
             continue
 
-        if _execute(db, claimed.action, case, decision, live=live):
+        outcome = _execute(db, claimed.action, case, decision, live=live, now=now)
+        if outcome is Outcome.EXECUTED:
             executed += 1
+        elif outcome is Outcome.DEFERRED:
+            deferred += 1
         else:
             failed += 1
 
@@ -348,6 +375,7 @@ def allocate_and_execute(
         "considered": len(candidates),
         "planned": len(decisions),
         "executed": executed,
+        "deferred": deferred,
         "failed_to_execute": failed,
         "queued_for_approval": queued,
         "suppressed": suppressed,
@@ -357,9 +385,7 @@ def allocate_and_execute(
 
 
 def _next_attempt_no(db: Session, case: Case) -> int:
-    taken = db.scalar(
-        select(func.count()).select_from(Action).where(Action.case_id == case.id)
-    )
+    taken = db.scalar(select(func.count()).select_from(Action).where(Action.case_id == case.id))
     return int(taken or 0) + 1
 
 
@@ -387,10 +413,50 @@ def _record_suppression(db: Session, case: Case, decision: Decision) -> None:
     db.commit()
 
 
+def contact_due_at(case: Case, delay_h: float, now: datetime) -> datetime:
+    """When a customer contact for this case may actually be sent.
+
+    One rule, used by both the executor and the deferred-work tick, because two
+    places deciding this independently is how they drift apart.
+
+    Two things had been computed and then discarded on the live path:
+
+    **The per-cause delay.** The allocator picks a delay from the cause -- 48h
+    for insufficient funds so it lands after payday, 26h for a spent limit, 6h
+    for a hard decline. The executor sent everything immediately. Timing is half
+    of the "cause-aware action *and timing*" result the evaluation reports, so
+    the deployed path was not running the system that was measured.
+
+    **Quiet hours.** The allocator shifts the send time out of 21:00-09:00 IST
+    and records rule `quiet_hours`, and only ever does so for actions that
+    contact a customer -- retries return earlier, unrationed. The executor
+    ignored the shift, so quiet hours were honoured on exactly the actions that
+    touch a gateway and ignored on the ones that touch a person.
+
+    The delay runs from **detection**, not from now: "48 hours after the payment
+    failed" is the claim the evaluation scores, and a case picked up three days
+    late is already due rather than owed another 48 hours.
+    """
+    due = case.detected_at + timedelta(hours=max(delay_h, 0.0))
+    if due < now:
+        due = now
+
+    policy = BudgetPolicy()
+    if policy.is_quiet_at(due):
+        due = policy.next_allowed_time(due)
+    return due
+
+
 def _execute(
-    db: Session, action: Action, case: Case, decision: Decision, *, live: bool
-) -> bool:
-    """Perform the decided action. Returns whether it actually happened.
+    db: Session,
+    action: Action,
+    case: Case,
+    decision: Decision,
+    *,
+    live: bool,
+    now: datetime,
+) -> Outcome:
+    """Perform the decided action, or record why it is not being performed yet.
 
     **The case only advances if the action succeeded.** This used to set `ACTED`
     unconditionally, and the consequence was the worst bug in the project: a
@@ -404,18 +470,39 @@ def _execute(
     contact metric -- and one unconditional status assignment on the live path
     undid all of them.
     """
+    due = contact_due_at(case, decision.delay_h, now)
+    if decision.action in CONTACT_ACTIONS and due > now:
+        action.scheduled_for = due
+        ledger.append(
+            db,
+            case_id=case.id,
+            event_type="case.action_deferred",
+            actor="executor",
+            payload={
+                "action_id": action.id,
+                "action_type": str(decision.action),
+                "rule": decision.rule,
+                "reason": decision.reason,
+                "due_at": due.isoformat(),
+                "delay_h": round(decision.delay_h, 2),
+                "waiting_h": round((due - now).total_seconds() / 3600.0, 2),
+            },
+        )
+        db.commit()
+        return Outcome.DEFERRED
+
     if decision.action == ActionType.RETRY:
         result = action_tools.schedule_retry(db, action, case, delay_h=decision.delay_h)
     elif decision.action == ActionType.MERCHANT_ALERT:
         result = action_tools.alert_merchant(
-            db, action, case,
+            db,
+            action,
+            case,
             message=f"{case.cause} is blocking payments; only you can change it",
         )
     elif decision.action in CONTACT_ACTIONS:
         channel = str(decision.action).replace("payment_link_", "")
-        result = action_tools.send_payment_link(
-            db, action, case, channel=channel, live=live
-        )
+        result = action_tools.send_payment_link(db, action, case, channel=channel, live=live)
     else:
         result = action_tools.schedule_retry(db, action, case, delay_h=decision.delay_h)
 
@@ -435,8 +522,108 @@ def _execute(
             },
         )
         db.commit()
-        return False
+        return Outcome.FAILED
 
     case.status = CaseStatus.ACTED
+    action.scheduled_for = None
     db.commit()
-    return True
+    return Outcome.EXECUTED
+
+
+def execute_due(
+    db: Session,
+    *,
+    limit: int = 100,
+    live: bool = False,
+    force: bool = False,
+    now: datetime | None = None,
+) -> dict:
+    """Carry out contacts whose deferral has expired.
+
+    The other half of the quiet-hours fix. Deferring a contact is only correct
+    if something later sends it; without this the rule would not be a deferral
+    at all, it would be a silent drop, which is the failure mode the ledger
+    event `case.action_deferred` would otherwise be quietly documenting.
+
+    Runs on an explicit tick, like every other background job here.
+
+    `force` sends contacts whose cause-implied delay has **not** yet elapsed. It
+    exists because that delay is measured in hours -- six for a hard decline,
+    forty-eight for insufficient funds -- and a demonstration cannot wait. An
+    operator pushing a recovery early is also a real thing merchants ask for.
+    Each override is written to the ledger as a human decision, because an
+    override nobody can see afterwards is indistinguishable from the bug this
+    scheduling was added to fix.
+
+    **`force` does not bypass quiet hours.** The cause-implied delay is an
+    optimisation and overriding it costs a little expected value. Quiet hours
+    are about not waking someone at 3am, and there is no demo worth a hole in
+    that.
+    """
+    now = now or datetime.now(UTC)
+    query = (
+        select(Action)
+        .where(Action.status == ActionStatus.PROPOSED)
+        .where(Action.scheduled_for.is_not(None))
+    )
+    if not force:
+        query = query.where(Action.scheduled_for <= now)
+    due = db.scalars(query.order_by(Action.scheduled_for).limit(limit)).all()
+
+    sent = failed = 0
+    still_quiet = 0
+    policy = BudgetPolicy()
+    for action in due:
+        case = db.scalar(select(Case).where(Case.id == action.case_id))
+        if case is None:
+            continue
+
+        # Re-check rather than trust the earlier arithmetic. A tick can run late,
+        # and "it was going to be fine when we planned it" is not a reason to
+        # message someone at 3am.
+        if policy.is_quiet_at(now):
+            action.scheduled_for = policy.next_allowed_time(now)
+            still_quiet += 1
+            continue
+
+        if force and action.scheduled_for > now:
+            ledger.append(
+                db,
+                case_id=case.id,
+                event_type="case.schedule_overridden",
+                actor="human",
+                payload={
+                    "action_id": action.id,
+                    "action_type": action.action_type,
+                    "was_due_at": action.scheduled_for.isoformat(),
+                    "sent_early_by_h": round(
+                        (action.scheduled_for - now).total_seconds() / 3600.0, 2
+                    ),
+                    "note": "operator sent ahead of the cause-implied delay",
+                },
+            )
+
+        channel = str(action.action_type).replace("payment_link_", "")
+        result = action_tools.send_payment_link(db, action, case, channel=channel, live=live)
+        if result.performed:
+            action.scheduled_for = None
+            case.status = CaseStatus.ACTED
+            sent += 1
+        else:
+            failed += 1
+    db.commit()
+
+    waiting = db.scalar(
+        select(func.count())
+        .select_from(Action)
+        .where(Action.status == ActionStatus.PROPOSED)
+        .where(Action.scheduled_for.is_not(None))
+    )
+    return {
+        "due": len(due),
+        "forced": bool(force),
+        "sent": sent,
+        "failed": failed,
+        "still_in_quiet_hours": still_quiet,
+        "waiting": int(waiting or 0),
+    }

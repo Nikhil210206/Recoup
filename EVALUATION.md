@@ -11,7 +11,7 @@ Every number below is a **simulation benchmark**, not production Razorpay data. 
 | cases (test split) | 2,400 |
 | revenue at risk | ₹15,171,629 |
 | contact budget | 600 |
-| generated | 2026-08-25 |
+| generated | 2026-08-26 |
 | cause-error crossover | none observed |
 
 ## 1. Which decision recovers the money
@@ -44,7 +44,7 @@ Every number below is a **simulation benchmark**, not production Razorpay data. 
   arm                               incremental Rs  contacts   unnec%  Rs/contact
   -------------------------------------------------------------------------------
   B5_pooled + ranking                    3,756,261       569     16%       6,602
-  RECOUP_allocator                       3,707,463       506      7%       7,327
+  RECOUP_allocator                       3,707,463       567     17%       6,539
   SILOED_per_channel_agents              3,670,309       462     12%       7,944
   B4_cause_aware (arrival)               3,169,900       570     15%       5,561
   B2_contact_everything                  1,560,621       352      8%       4,434
@@ -64,10 +64,10 @@ Every number below is a **simulation benchmark**, not production Razorpay data. 
 ```
   variant                             incremental Rs  contacts
   ------------------------------------------------------------
-  full (cause-rate estimator, cap 2)       3,707,463       506
-  no uplift estimate at all                3,711,449       512
-  no contact cap                           3,686,875       506
-  per-case ML uplift model                 2,808,799       505
+  full (cause-rate estimator, cap 2)       3,707,463       567
+  no uplift estimate at all                3,711,449       569
+  no contact cap                           3,686,875       567
+  per-case ML uplift model                 2,808,799       569
 
   The estimator and the contact cap are worth approximately nothing, and
   are reported that way. A cause-rate group-by tracks true uplift better
@@ -87,7 +87,7 @@ Every number below is a **simulation benchmark**, not production Razorpay data. 
   ------------------------------------------------------------------------------------
   B2_contact_everything                          +68           [-180, 293]           no
   B4_cause_aware (arrival)                      +739            [510, 983]          yes
-  RECOUP_allocator                              +963          [670, 1,266]          yes
+  RECOUP_allocator                              +963          [670, 1,265]          yes
   SILOED_per_channel_agents                     +947          [698, 1,225]          yes
   B5_pooled + ranking                           +983          [729, 1,268]          yes
 
