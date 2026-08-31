@@ -5,7 +5,7 @@
 Using it is worth roughly **5×** against a fixed retry schedule — measured, on
 held-out data, in all three world parameterisations. This repository is that
 finding, the system that acts on it, and the governance layer that makes
-automating it safe.
+automating it safe
 
 *Simulation benchmark throughout. Not production Razorpay data.*
 
