@@ -11,18 +11,33 @@ them behind a human would stall the cheapest recovery path for no benefit.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.allocator.budget import BudgetPolicy
-from app.allocator.estimator import CauseRate
-from app.allocator.policy import Allocator
 from app.db import get_db
 from app.models import Action, ActionStatus, Case, CaseStatus
 from app.services import actions as action_tools
-from app.services import live_allocator
-from app.simulation.outcomes import ActionType
+
+if TYPE_CHECKING:  # pragma: no cover - annotations only
+    from app.allocator.estimator import CauseRate
+    from app.allocator.policy import Allocator
+
+# The allocator, the estimator and the outcome enum are imported inside the
+# functions that use them, NOT here. Importing them at module scope drags
+# pandas, numpy, scikit-learn, scipy and pyarrow -- ~378MB -- into every process
+# that imports `app.main`, including one that only ever answers a webhook.
+#
+# On a host that sleeps when idle, that import cost is paid on the cold start
+# that a Razorpay webhook wakes up. Razorpay times out, retries, and the
+# idempotency guard then rejects the retry, leaving the case unclassified. That
+# is the Day 4 incident exactly, re-entering through the deployment rather than
+# through the handler. Keep these imports lazy.
+#
+# `app.allocator.budget` is safe at module scope: it imports nothing heavy.
 
 router = APIRouter(prefix="/actions", tags=["actions"])
 
@@ -37,6 +52,9 @@ def _build_allocator(budget: int) -> Allocator:
     per request from *live* data would also make the live path non-reproducible
     against the measured one.
     """
+    from app.allocator.estimator import CauseRate
+    from app.allocator.policy import Allocator
+
     global _ESTIMATOR
     if _ESTIMATOR is None:
         from app.model.train import build_frames
@@ -69,6 +87,8 @@ def allocate(
     endpoint that creates real payment links every time it is hit is one nobody
     can safely run twice.
     """
+    from app.services import live_allocator
+
     allocator = _build_allocator(budget)
     return live_allocator.allocate_and_execute(db, allocator, limit=limit, live=live)
 
@@ -131,6 +151,8 @@ def approve(
     `approved_by` is required and recorded. An approval with no name attached is
     not an approval anyone can be accountable for.
     """
+    from app.simulation.outcomes import ActionType
+
     action = _load_pending(db, action_id)
     case = db.scalar(select(Case).where(Case.id == action.case_id))
     result = action_tools.approve(db, action, approved_by=approved_by)

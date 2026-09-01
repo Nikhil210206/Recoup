@@ -18,8 +18,11 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Case, CaseStatus
-from app.services import live_allocator
 from app.services.ingest import classify_pending
+
+# `live_allocator` is imported inside the endpoint below rather than here: it
+# pulls pandas and pyarrow, and this module is on the import path of every
+# process that serves a webhook. See the note in api/actions.py.
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -63,6 +66,8 @@ def run_execute_due(
     demonstration, and logged to the ledger as a human override. It does not
     bypass quiet hours.
     """
+    from app.services import live_allocator
+
     return live_allocator.execute_due(db, limit=limit, live=live, force=force)
 
 

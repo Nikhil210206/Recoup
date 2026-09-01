@@ -1,0 +1,27 @@
+# Keep the build context small and, more importantly, keep secrets and local
+# state out of the image.
+.env
+.env.*
+!.env.example
+
+.git
+.venv
+backend/.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+
+# Generated datasets are large and are not needed to serve the API. The
+# allocator falls back to AmountOnly when no dataset is present -- see
+# api/actions.py `_build_allocator`.
+data/generated
+artifacts
+
+backend/tests
+frontend
+
+# Local-only planning notes. These must never reach an image or a registry.
+CLAUDE.md
+PROJECT_STATUS.md
+.claude

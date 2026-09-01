@@ -32,6 +32,26 @@ class Settings(BaseSettings):
     quiet_hours_start: int = Field(default=21, ge=0, le=23)
     quiet_hours_end: int = Field(default=9, ge=0, le=23)
 
+    @field_validator("database_url")
+    @classmethod
+    def _use_psycopg3_driver(cls, v: str) -> str:
+        """Force the psycopg 3 dialect regardless of how the host spells it.
+
+        Managed Postgres hands out `postgres://` (Heroku's legacy form) or
+        `postgresql://`. SQLAlchemy resolves a bare `postgresql://` to psycopg2,
+        which is NOT installed here -- requirements.txt pins `psycopg[binary]`,
+        which is psycopg 3. The failure is a ModuleNotFoundError at import time,
+        before any logging is configured, so on a managed host it presents as a
+        service that will not boot with no obvious reason why.
+
+        Normalising here rather than in db.py keeps it on the one path every
+        caller already goes through, including the tests and the CLIs.
+        """
+        for prefix in ("postgres://", "postgresql://"):
+            if v.startswith(prefix):
+                return "postgresql+psycopg://" + v[len(prefix) :]
+        return v
+
     @field_validator("razorpay_key_id")
     @classmethod
     def _refuse_live_keys(cls, v: str) -> str:

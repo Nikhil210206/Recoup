@@ -1,0 +1,62 @@
+# Render blueprint. One web service, one managed Postgres.
+#
+# Verify two things against Render's current pricing page before relying on
+# this, because both have changed before and neither fails loudly:
+#   1. the free Postgres retention window -- the instance is deleted when it
+#      expires, and the submission must outlive it
+#   2. that `plan: free` is still the accepted value for both resource types
+#
+# Secrets are declared `sync: false`: Render prompts for them once in the
+# dashboard and never stores them in this file. Nothing in here is a credential.
+
+services:
+  - type: web
+    name: recoup
+    runtime: docker
+    plan: free
+    region: singapore # closest to Razorpay's infrastructure and to the judges
+    dockerfilePath: ./Dockerfile
+    dockerContext: . # repo root, NOT backend/ -- see the note in the Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: recoup-db
+          property: connectionString
+      # Render emits `postgresql://`, which SQLAlchemy maps to psycopg2 -- not
+      # installed. `Settings._use_psycopg3_driver` rewrites it. Covered by
+      # tests/test_deployment.py so the rewrite cannot be tidied away.
+
+      - key: APP_ENV
+        value: production
+
+      # Test mode only. `config.py` refuses to boot on an `rzp_live_` key, so a
+      # mistake here stops the service rather than moving real money.
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+
+databases:
+  - name: recoup-db
+    plan: free
+    databaseName: recoup
+    user: recoup
+
+# NOT DECLARED HERE, and required:
+#
+# Render's own Cron Jobs are a paid feature, and free web services sleep after
+# ~15 minutes idle. Both are solved by one external pinger (cron-job.org or
+# UptimeRobot, both free) hitting:
+#
+#     POST https://<service>.onrender.com/tasks/execute-due
+#
+# every 10 minutes. It keeps the service warm so a Razorpay webhook never lands
+# on a sleeping process, AND it drains deferred contacts -- without it, quiet
+# hours defer a contact and nothing ever sends it, which the ledger would record
+# as scheduled-but-never-sent.
+#
+# Leave `live` at its default. The pinger must not be able to create real
+# payment links on a timer.
