@@ -11,7 +11,7 @@ Every number below is a **simulation benchmark**, not production Razorpay data. 
 | cases (test split) | 2,400 |
 | revenue at risk | ₹15,171,629 |
 | contact budget | 600 |
-| generated | 2026-08-26 |
+| generated | 2026-09-02 |
 | cause-error crossover | none observed |
 
 ## 1. Which decision recovers the money
@@ -153,4 +153,36 @@ Every number below is a **simulation benchmark**, not production Razorpay data. 
   Plans are made on corrupted input and scored against the true latent
   parameters -- which is what a misclassification costs in production:
   you act on what you believed, and reality settles on what was true.
+```
+
+## 8. How often the gates refused
+
+```
+  2,400 cases planned; 1,893 acted on, of which
+  600 would spend a contact against a budget of 600.
+
+  These are PLANNING decisions. Section 2 reports a lower contact count
+  for the same arm because that one is measured after execution, where
+  fatigue and collision drop some of what was planned. Both are correct;
+  they are different stages, and a refusal happens at this one.
+
+  reason                                  rule                  cases   Rs refused
+  --------------------------------------------------------------------------------
+  cause_risk_blocked_is_not_recoverable   risk_suppression         27      176,142
+  ev_below_threshold_5000                 ev_floor                 22        6,531
+  customer_contact_cap                    contact_budget            1        2,232
+  --------------------------------------------------------------------------------
+  GOVERNANCE REFUSALS                                              50      184,905
+
+  global_budget_exhausted                 contact_budget          457      296,894
+
+  The two blocks are NOT summed, and must not be. A governance refusal
+  would still refuse with unlimited budget: no customer action can fix
+  the failure, or the expected value does not clear the floor. Budget
+  exhaustion is not a gate firing at all -- it is the contact budget
+  running out, and it moves with the budget rather than with policy.
+
+  Adding them yields a larger, better-sounding figure that measures
+  neither quantity. The governance line is the one that answers 'is the
+  gate load-bearing', and it is the one the README quotes.
 ```

@@ -346,6 +346,96 @@ def run(world: str, seed: int) -> tuple[Report, dict]:
         + "  you act on what you believed, and reality settles on what was true.",
     )
 
+    # --- 8. how often the gates refused ------------------------------------
+    #
+    # "Zero policy violations" is true by construction and proves nothing. What
+    # shows a gate is load-bearing is how often it refused, and what that cost.
+    #
+    # The split below is the entire point of this section. An earlier cut of
+    # this number reported every non-acted case as a refusal -- 507 cases and
+    # Rs 481,799 on the base world -- which folds two unrelated things together:
+    #
+    #   governance   a rule declined this case on principle. It would still
+    #                decline it with unlimited budget.
+    #   exhaustion   the allocator simply ran out of contacts. Nothing refused
+    #                anything; the money ran out.
+    #
+    # Reporting the total would be a plausible number, in a believable range,
+    # under a correct-sounding label, measuring something other than what the
+    # label says. Keep the two lines apart.
+    gate = allocator()
+    gate.budget_policy.max_total_contacts = budget
+    gate_decisions, _ = gate.plan(test)
+    amount_by_case = dict(zip(test.case_id, test.amount_paise, strict=True))
+
+    EXHAUSTED = "global_budget_exhausted"
+    tally: dict[tuple[str, str], list[int]] = {}
+    for d in gate_decisions:
+        if d.acted:
+            continue
+        entry = tally.setdefault((d.reason, d.rule), [0, 0])
+        entry[0] += 1
+        entry[1] += amount_by_case.get(d.case_id, 0)
+
+    governance = sorted(
+        ((r, k, n, p) for (r, k), (n, p) in tally.items() if r != EXHAUSTED),
+        key=lambda row: -row[2],
+    )
+    exhausted = [(r, k, n, p) for (r, k), (n, p) in tally.items() if r == EXHAUSTED]
+
+    acted = sum(1 for d in gate_decisions if d.acted)
+    gov_cases = sum(row[2] for row in governance)
+    gov_paise = sum(row[3] for row in governance)
+
+    planned_contacts = sum(1 for d in gate_decisions if d.acted and d.uses_contact)
+    gate_lines = [
+        f"  {len(gate_decisions):,} cases planned; {acted:,} acted on, of which",
+        f"  {planned_contacts:,} would spend a contact against a budget of {budget:,}.",
+        "",
+        "  These are PLANNING decisions. Section 2 reports a lower contact count",
+        "  for the same arm because that one is measured after execution, where",
+        "  fatigue and collision drop some of what was planned. Both are correct;",
+        "  they are different stages, and a refusal happens at this one.",
+        "",
+        f"  {'reason':40}{'rule':20}{'cases':>7}{'Rs refused':>13}",
+        "  " + "-" * 80,
+    ]
+    for reason, rule, n, paise in governance:
+        gate_lines.append(f"  {reason:40}{rule:20}{n:>7,}{paise / 100:>13,.0f}")
+    gate_lines.append("  " + "-" * 80)
+    gate_lines.append(f"  {'GOVERNANCE REFUSALS':60}{gov_cases:>7,}{gov_paise / 100:>13,.0f}")
+    gate_lines.append("")
+    for reason, rule, n, paise in exhausted:
+        gate_lines.append(f"  {reason:40}{rule:20}{n:>7,}{paise / 100:>13,.0f}")
+
+    gate_lines += [
+        "",
+        "  The two blocks are NOT summed, and must not be. A governance refusal",
+        "  would still refuse with unlimited budget: no customer action can fix",
+        "  the failure, or the expected value does not clear the floor. Budget",
+        "  exhaustion is not a gate firing at all -- it is the contact budget",
+        "  running out, and it moves with the budget rather than with policy.",
+        "",
+        "  Adding them yields a larger, better-sounding figure that measures",
+        "  neither quantity. The governance line is the one that answers 'is the",
+        "  gate load-bearing', and it is the one the README quotes.",
+    ]
+    report.facts["refusals"] = {
+        "planned": len(gate_decisions),
+        "acted": acted,
+        "governance": [
+            {"reason": r, "rule": k, "cases": n, "rupees": paise / 100}
+            for r, k, n, paise in governance
+        ],
+        "governance_cases": gov_cases,
+        "governance_rupees": gov_paise / 100,
+        "budget_exhausted": [
+            {"reason": r, "rule": k, "cases": n, "rupees": paise / 100}
+            for r, k, n, paise in exhausted
+        ],
+    }
+    report.add("8. How often the gates refused", "\n".join(gate_lines))
+
     meta["cause-error crossover"] = (
         f"{crossover(points):.0%}" if crossover(points) is not None else "none observed"
     )

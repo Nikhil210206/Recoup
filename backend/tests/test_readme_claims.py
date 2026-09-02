@@ -92,6 +92,88 @@ class TestDatasetClaims:
         assert f"{len(taxonomy.REASON_TO_CAUSE)} published codes" in readme
 
 
+class TestRefusalClaims:
+    """The README quotes what the gates refused. These recompute it.
+
+    The governance total and the budget-exhaustion line are asserted separately
+    and their sum is asserted NOT to appear, because an earlier draft of this
+    section reported the combined 507 cases / Rs 481,799 as "how often the gate
+    refused". That number is in a believable range, has a correct-sounding
+    label, and measures neither quantity.
+    """
+
+    @pytest.fixture(scope="class")
+    @staticmethod
+    def refusals(test_slice):
+        est = CauseRate().fit(build_frames("base", 42)["train"])
+        alloc = Allocator(
+            estimator=est, budget_policy=BudgetPolicy(max_contacts_per_customer=2)
+        )
+        alloc.budget_policy.max_total_contacts = BUDGET
+        decisions, _ = alloc.plan(test_slice)
+        amount = dict(zip(test_slice.case_id, test_slice.amount_paise, strict=True))
+        refused = [d for d in decisions if not d.acted]
+        return decisions, refused, amount
+
+    def test_governance_refusal_totals_match_the_readme(self, readme, refusals):
+        _, refused, amount = refusals
+        gov = [d for d in refused if d.reason != "global_budget_exhausted"]
+        rupees = sum(amount[d.case_id] for d in gov) / 100
+
+        assert _quoted_int(readme, r"\*\*([\d,]+)\*\* \| \*\*₹[\d,]+\*\* \|") == len(gov)
+        assert _quoted_int(readme, r"\*\*₹([\d,]+)\*\* \|") == round(rupees)
+
+    def test_the_denominator_matches_the_readme(self, readme, refusals):
+        """The sentence introducing the table quotes the split size and how many
+        cases were acted on. Both move if the budget or the world changes, and
+        neither was covered until this test."""
+        decisions, _, _ = refusals
+        assert _quoted_int(readme, r"([\d,]+)-case test split") == len(decisions)
+        assert _quoted_int(readme, r"([\d,]+) were acted on") == sum(
+            1 for d in decisions if d.acted
+        )
+
+    def test_the_suppressed_money_is_all_risk_blocked(self, readme, refusals):
+        """The README says all 27 are `risk_blocked`. An earlier draft said they
+        were a mix including merchant misconfiguration -- which is false: a
+        merchant_config case is ACTED on with a merchant alert, not refused."""
+        _, refused, amount = refusals
+        blocked = [d for d in refused if d.rule == "risk_suppression"]
+
+        assert {d.cause for d in blocked} == {"risk_blocked"}
+        assert len(blocked) == 27
+        assert round(sum(amount[d.case_id] for d in blocked) / 100) == 176_142
+        assert "₹176,142" in readme
+
+    def test_merchant_config_is_acted_on_not_refused(self, readme, refusals):
+        decisions, _, _ = refusals
+        alerted = [d for d in decisions if d.rule == "merchant_alert_only"]
+        assert alerted, "no merchant alerts planned; the README claims 9"
+        assert {d.cause for d in alerted} == {"merchant_config"}
+        assert all(d.acted for d in alerted)
+        # \s+ not a literal newline: this repo has lost edits before to text
+        # that had been rewrapped since it was written.
+        assert _quoted_int(readme, r"([\d]+)\s+such\s+cases\s+are\s+acted\s+on") == len(
+            alerted
+        )
+
+    def test_exhaustion_is_reported_separately_and_never_summed(self, readme, refusals):
+        _, refused, amount = refusals
+        gov = [d for d in refused if d.reason != "global_budget_exhausted"]
+        out = [d for d in refused if d.reason == "global_budget_exhausted"]
+        gov_rs = round(sum(amount[d.case_id] for d in gov) / 100)
+        out_rs = round(sum(amount[d.case_id] for d in out) / 100)
+
+        assert f"{len(out):,} cases (₹{out_rs:,})" in readme
+
+        # The combined figure must not appear. This is the assertion that
+        # would have caught the original draft.
+        assert f"₹{gov_rs + out_rs:,}" not in readme, (
+            "README quotes governance + exhaustion as one number; they measure "
+            "different things and must stay on separate lines"
+        )
+
+
 class TestHeadlineLever:
     def test_action_selection_lift(self, test_slice):
         """The project's largest claim: cause-aware action and timing."""
@@ -135,7 +217,20 @@ class TestAllocatorClaims:
 
 class TestHonestyClaims:
     def test_readme_labels_results_as_simulated(self, readme):
-        assert "Simulation benchmark" in readme or "SIMULATION BENCHMARK" in readme
+        """The label may be phrased freely, but it must be near the top and it
+        must be impossible to read the headline numbers without meeting it.
+
+        This asserts the section, not just the phrase: an earlier version only
+        checked for the words "Simulation benchmark", which a rewrite silently
+        dropped while the honesty itself was being strengthened.
+        """
+        assert "simulation benchmark" in readme.lower()
+
+        heading = "## What is real and what is not"
+        assert heading in readme, "the real/simulated split must be a section"
+
+        # Before the first result. "The finding" is where the numbers start.
+        assert readme.index(heading) < readme.index("## The finding")
 
     def test_readme_states_its_limitations(self, readme):
         """The section that says what the work cannot support. Its absence would
@@ -189,12 +284,13 @@ class TestEvaluationHarness:
             report, _ = run("base", 42)
 
         titles = [t.lower() for t, _ in report.sections]
-        assert len(titles) == 7, titles
+        assert len(titles) == 8, titles
 
         # Each of these is a claim the write-up depends on. If a section is
         # dropped, the corresponding claim in README or ARCHITECTURE becomes
         # unsupported, and nothing else would notice.
         required = [
+            "gates refused",          # governance, quantified rather than asserted
             "recovers the money",     # which decision is the lever
             "identical contact budget",  # every arm, fairly compared
             "component is worth",     # the ablation, including the parts worth ~0

@@ -64,7 +64,7 @@
   "at_risk_rupees": 15171629.29,
   "budget_fraction": 0.25,
   "contact_budget": 600,
-  "generated": "2026-08-26",
+  "generated": "2026-09-02",
   "levers": [
     {
       "contacts": 600,
@@ -109,6 +109,40 @@
       "variant": "EV ranked (oracle uplift)"
     }
   ],
+  "refusals": {
+    "acted": 1893,
+    "budget_exhausted": [
+      {
+        "cases": 457,
+        "reason": "global_budget_exhausted",
+        "rule": "contact_budget",
+        "rupees": 296893.92
+      }
+    ],
+    "governance": [
+      {
+        "cases": 27,
+        "reason": "cause_risk_blocked_is_not_recoverable",
+        "rule": "risk_suppression",
+        "rupees": 176142.15
+      },
+      {
+        "cases": 22,
+        "reason": "ev_below_threshold_5000",
+        "rule": "ev_floor",
+        "rupees": 6531.21
+      },
+      {
+        "cases": 1,
+        "reason": "customer_contact_cap",
+        "rule": "contact_budget",
+        "rupees": 2231.93
+      }
+    ],
+    "governance_cases": 50,
+    "governance_rupees": 184905.29,
+    "planned": 2400
+  },
   "seed": 42,
   "test_cases": 2400,
   "world": "base"
