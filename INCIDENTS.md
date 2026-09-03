@@ -1394,3 +1394,204 @@ number that is only wrong in a place it was never carried to.
 What found them was rendering the ledger as sentences and reading it. "Chose
 method switch prompt at 00:36" and "sent at 00:36" are both unremarkable alone.
 Next to each other they are a bug.
+
+---
+
+## 2026-08-31 — Day 12: three ways a deployment lies about itself
+
+The submission needs a public link, so the service had to leave a laptop. None
+of what follows reproduces locally, and all three would have surfaced on the
+host as something other than what they were.
+
+---
+
+### The Day 4 incident, re-entering through the infrastructure
+
+**Expected:** deploying a working service is a packaging problem.
+
+**Actually:** importing `app.main` loaded pandas, numpy, scikit-learn, scipy,
+pyarrow and joblib — about 378MB of site-packages, 1,275ms of import — because
+`api/actions.py` and `api/tasks.py` imported the allocator at module scope.
+
+**Why this is not a performance note.** Free hosting tiers sleep when idle. That
+import cost is therefore paid on the cold start that a Razorpay webhook wakes
+up. Razorpay times out, retries, and the idempotency guard correctly rejects the
+retry — so the case is never classified.
+
+That is exactly the Day 4 defect, which was fixed by moving a 31-second LLM call
+out of the webhook handler. The handler is still fast. The *process* became slow
+to exist, and the failure is identical from Razorpay's side. A fix at one layer
+does not hold if the same cost reappears at another.
+
+**Fix:** the allocator, the estimator and the outcome enum are imported inside
+the functions that use them. `import app.main` went 1,275ms → 294ms; the
+container answers `/health` 702ms from cold. A test in `test_deployment.py`
+fails if any of those imports is hoisted back to module scope, because nothing
+about a function-level import looks deliberate to someone tidying a file.
+
+`numpy` still loads, via `simulation.outcomes.ActionType`. Evicting it means
+relocating the enum, and the image has no bundle cap. Left, and stated.
+
+---
+
+### A boot failure with no stated reason
+
+**Expected:** `DATABASE_URL` is a connection string; hosts hand you one.
+
+**Actually:** managed Postgres emits `postgresql://`. SQLAlchemy maps a bare
+`postgresql://` to **psycopg2**, which this project does not install — it pins
+`psycopg[binary]`, which is psycopg 3.
+
+The service dies with `ModuleNotFoundError: No module named 'psycopg2'` at
+import, before logging is configured. On a managed host that presents as a
+service that will not start, with nothing useful in the log.
+
+**Fix:** a validator on `Settings.database_url` normalises the scheme. Verified
+the honest way — a container built from the pre-fix code was run against a
+Render-style URL and reproduced the exact traceback, then the same container
+built from the fixed code served every endpoint. Tests cover both spellings and
+assert a password containing `:` and `@` survives the rewrite, because rewriting
+a URL by string surgery is how credentials quietly get truncated.
+
+---
+
+### An image that starts cleanly and then cannot find its own evidence
+
+**Expected:** the Docker build context is the backend directory.
+
+**Actually:** `config.REPO_ROOT` resolves to `parents[2]`, and the console reads
+`docs/evidence/*.json` relative to it. A `backend/`-only context produces an
+image that boots, passes a health check, serves the console shell — and answers
+**503** on the evaluation panel, because the files are not in the image.
+
+**Fix:** the build context is the repository root and the Dockerfile says why, at
+length, directly above the `COPY`. This is the kind of constraint that looks like
+an oversight to the next person to touch it.
+
+---
+
+**The pattern, on the twelfth day.** All three were invisible in development and
+all three would have been misread in production: a timeout that looks like
+Razorpay's fault, a crash that looks like a bad connection string, a 503 that
+looks like a missing `make eval`. Running the container locally against a
+Render-shaped environment — the wrong URL scheme included — found all of them in
+one sitting.
+
+**Declared, not fixed:** `/tasks/*` and `/actions/*` have no authentication.
+Once the URL is public, anyone can `POST /tasks/execute-due?force=true`. Link
+notifications are disabled everywhere, so nobody can be messaged, but `force`
+writes `case.schedule_overridden` to the ledger **labelled as a human
+decision**. The central claim of this project is that the ledger reconstructs who
+decided what; an anonymous request recorded as a human override puts a lie in it
+that replay would faithfully reproduce. A shared-secret header is the fix and it
+lands before the service is exposed.
+
+---
+
+## 2026-09-01 — Day 11.5: what the gates refused, and three passes over my own work
+
+A comparative review against another Track 03 entry. Its headline reports 34
+recovered payments with no baseline anywhere, so it never establishes what it
+beat — but its honesty scaffolding is better than ours in four places, and three
+were documentation over facts already in hand. This is the record of acting on
+that, and of auditing the result three times.
+
+---
+
+### A sentence that asked for a number and did not give one
+
+The README said, and had said for days:
+
+> "Zero policy violations" is true by construction and proves nothing. The
+> number that shows a gate is load-bearing is how often it *refused*.
+
+And then gave no number. The strongest sentence in the document, with the
+evidence missing.
+
+**Fix:** section 8 of `EVALUATION.md`, generated by `make eval`.
+
+---
+
+### The first cut of that number was the house pattern, again
+
+**Expected:** count the cases the allocator did not act on. That is the refusal
+count.
+
+**Actually:** 507 cases, ₹481,799 — and it is wrong. 457 of those are
+`global_budget_exhausted`: the contact budget ran out. Nothing refused anything.
+A governance refusal would still refuse with unlimited budget; exhaustion moves
+with the budget and not with policy.
+
+The real number is **50 cases, ₹184,905**. The combined figure is larger,
+sounds better, and measures neither quantity — a plausible value under a
+correct-sounding label, which is the failure mode this log keeps recording.
+
+**Fix:** the two are printed as separate blocks, the harness carries a comment
+explaining why they are never summed, and a test asserts the combined figure
+does **not** appear in the README.
+
+---
+
+### I then wrote a false claim about the money we refuse
+
+**Expected:** describing 27 suppressed cases is prose, not arithmetic.
+
+**Actually:** I wrote that they were "a merchant misconfiguration, a fraud block,
+a structurally dead instrument". Checked against the data: **all 27 are
+`risk_blocked`**, and merchant misconfiguration is not among them — those 9
+cases are *acted on*, with a merchant alert.
+
+The taxonomy separates `who_can_fix = nobody` from `who_can_fix = merchant`
+deliberately, and refuses only the first. My sentence flattened the distinction
+the file exists to draw, in the judged artifact, in a paragraph about honesty.
+
+**Fix:** the corrected version, which is a better argument than the wrong one —
+the system stays silent where nobody can act, and *alerts* where the merchant
+can. Six tests now recompute every number in that section.
+
+---
+
+### Two numbers, both correct, that no reader could reconcile
+
+**Expected:** section 8 and section 2 describe the same allocator, so their
+counts agree.
+
+**Actually:** section 8 plans 600 contacts against a 600 budget. Section 2, two
+pages earlier, prints **567** for the same arm — measured after execution, where
+fatigue and collision drop some of what was planned. Both correct. Neither
+labelled. A reader trying to reconcile them cannot, and would reasonably assume
+one is wrong.
+
+**Fix:** section 8 states which stage it measures.
+
+---
+
+### Smaller ones from the same passes
+
+- **A fake assertion.** `assert ... or True` — always passes. I wrote it. It
+  looked like a check and was not one.
+- **A test regex hardcoding a line break** (`([\d]+) such\ncases...`). Rewrapping
+  that paragraph would have failed the suite with a message about merchant
+  alerts. This repository has already lost two edits to reformatted anchors.
+- **A README row that read wider than the truth.** "Classification | Real code"
+  — the benchmark calls `taxonomy.classify`, the deterministic tier only. No LLM
+  tail, no risk guardrail, no cache, no ledger. In a table whose entire job is
+  separating real from simulated, that was too generous.
+- **The README told judges to install Node 20+.** There is no Node in this
+  project, no `package.json`, and no build step.
+
+---
+
+**The pattern, and when to stop.** Three passes, in order: two defects, then
+three, then none. Severity fell from *untrue* to *unclear* to *nothing*. The
+first pass caught a false statement about the data; the second caught labelling
+and brittleness; the third caught nothing and instead confirmed something
+stronger than had been claimed — `risk_suppression` refuses the same 27 cases
+for the same ₹176,142 in **all three worlds**, while the expected-value floor
+moves from 7 refusals to 52. A fraud block does not become recoverable because
+the world got kinder, and a gate whose output tracked the world's parameters
+would be an economics knob wearing a policy's name.
+
+Convergence is the signal to stop auditing a thing. The remaining risk is not in
+this section — it is the most-audited code in the repository now — it is in the
+deployment, which has had no adversarial pass at all.

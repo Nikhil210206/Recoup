@@ -145,6 +145,45 @@ class TestRefusalClaims:
         assert round(sum(amount[d.case_id] for d in blocked) / 100) == 176_142
         assert "₹176,142" in readme
 
+    def test_the_suppressed_money_is_the_same_in_every_world(self, readme):
+        """The README claims risk_suppression is world-invariant while the EV
+        floor is not. That contrast is the argument that the gate is structural
+        rather than an artifact of one world's parameters, so both halves are
+        asserted -- an invariant that happened to be invariant in only one world
+        would read identically here.
+        """
+        seen = {}
+        for world in ("base", "pessimistic", "optimistic"):
+            cases = load(world, seed=42)
+            split = cases[cases.split == "test"].reset_index(drop=True)
+            alloc = Allocator(
+                estimator=CauseRate().fit(build_frames(world, 42)["train"]),
+                budget_policy=BudgetPolicy(max_contacts_per_customer=2),
+            )
+            alloc.budget_policy.max_total_contacts = int(len(split) * BUDGET_FRACTION)
+            decisions, _ = alloc.plan(split)
+            amount = dict(zip(split.case_id, split.amount_paise, strict=True))
+            refused = [d for d in decisions if not d.acted]
+            blocked = [d for d in refused if d.rule == "risk_suppression"]
+            seen[world] = {
+                "blocked": len(blocked),
+                "rupees": round(sum(amount[d.case_id] for d in blocked) / 100),
+                "ev_floor": sum(1 for d in refused if d.rule == "ev_floor"),
+            }
+
+        assert {v["blocked"] for v in seen.values()} == {27}, seen
+        assert {v["rupees"] for v in seen.values()} == {176_142}, seen
+
+        # The EV floor must genuinely move, or the claimed contrast is vacuous.
+        assert seen["optimistic"]["ev_floor"] < seen["base"]["ev_floor"]
+        assert seen["base"]["ev_floor"] < seen["pessimistic"]["ev_floor"]
+        assert _quoted_int(readme, r"refuses ([\d]+) cases in the optimistic") == (
+            seen["optimistic"]["ev_floor"]
+        )
+        assert _quoted_int(readme, r"([\d]+) in the pessimistic") == (
+            seen["pessimistic"]["ev_floor"]
+        )
+
     def test_merchant_config_is_acted_on_not_refused(self, readme, refusals):
         decisions, _, _ = refusals
         alerted = [d for d in decisions if d.rule == "merchant_alert_only"]

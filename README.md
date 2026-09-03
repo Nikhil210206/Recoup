@@ -88,6 +88,14 @@ recovering a fraudulent one; if it is a false positive, no customer nudge clears
 it either. `risk_suppression` refuses them, and relaxing that rule would raise
 the headline recovery figure while making the system worse.
 
+**The same 27 cases in all three worlds.** The worlds vary how recoverable
+failures are, and the expected-value floor moves a great deal with them — it
+refuses 7 cases in the optimistic world and 52 in the pessimistic one, because
+what is worth a contact depends on what a contact is worth. `risk_suppression`
+refuses the same 27, for the same ₹176,142, in every one. A fraud block does not
+become recoverable because the world got kinder. A gate whose output tracked the
+world's parameters would be an economics knob wearing a policy's name.
+
 The distinction the taxonomy draws here is the point. A merchant configuration
 failure is *also* unrecoverable by the customer, but it is not refused: 9 such
 cases are acted on with a merchant alert and zero customer contact, because
@@ -205,7 +213,8 @@ deliberately refused.
 
 ## Quickstart
 
-Python 3.13+, Docker, Node 20+.
+Python 3.13+ (developed on 3.14) and Docker. **No Node, and no build step** —
+the console is plain HTML, CSS and JavaScript served by FastAPI.
 
 ```bash
 cp .env.example .env      # Razorpay TEST keys; live keys are refused
@@ -229,7 +238,8 @@ make api           # API and console on :8010  (PORT= to change)
 make seed          # fill the database so there is something to look at
 ```
 
-Then open **http://localhost:8010**.
+Then open **http://localhost:8010**. The full API, including every endpoint
+the console reads, is browsable at **/docs**.
 
 It reads the running system: the approval queue, the contacts scheduled but not
 yet sent, every action a stopping rule refused, and the append-only ledger. The
@@ -311,11 +321,14 @@ claiming to be, and a baseline that was rigged in my own favour.
 
 ```
 backend/app/
-  api/          webhook receiver, deferred-task endpoints
+  api/          webhook receiver, deferred-task endpoints, console read models
   services/     classifier, LLM providers, ingest adapters, ledger
   simulation/   generator, outcome simulator, baseline policies, arm harness
   model/        features, uplift model, calibration, lever study
   allocator/    taxonomy action selection, budget, governance, bake-off
+  evaluation/   the full harness and both robustness sweeps
+  scripts/      the live demo and the real Razorpay loop
+  static/       the console -- one page, no framework, no build step
   taxonomy.py   canonical causes mapped from Razorpay's published error codes
 ```
 
