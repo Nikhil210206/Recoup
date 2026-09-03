@@ -284,6 +284,7 @@ def allocate_and_execute(
     limit: int = 500,
     live: bool = False,
     now: datetime | None = None,
+    cases: list[Case] | None = None,
 ) -> dict:
     """Plan over the open cases and execute what survives every gate.
 
@@ -297,7 +298,11 @@ def allocate_and_execute(
     afternoon and fails at night.
     """
     now = now or datetime.now(UTC)
-    candidates = open_cases(db, limit=limit)
+    # `cases` lets a caller plan over an explicit set instead of the whole open
+    # queue -- the console's demo plans exactly the case it just injected. The
+    # default is unchanged, so every other caller still sees the full queue and
+    # there is only one planning path to keep correct.
+    candidates = cases if cases is not None else open_cases(db, limit=limit)
     if not candidates:
         return {"considered": 0, "planned": 0, "executed": 0, "stopped": {}, "queued": 0}
 

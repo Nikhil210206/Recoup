@@ -106,6 +106,16 @@ const NARRATE = {
     "Recovery action sent",
     esc(p.detail || "") + (p.short_url ? ` · <span class="mono">${esc(p.short_url)}</span>` : ""),
   ],
+  "case.suppressed": (p) => [
+    `Refused — <strong>${esc(String(p.rule || "suppressed").replace(/_/g, " "))}</strong>`,
+    esc(p.reason || "no action has positive expected value here"),
+  ],
+  "case.action_deferred": (p) => [
+    "Decided, and deliberately held",
+    [p.rule && `rule <span class="mono">${esc(p.rule)}</span>`,
+     p.send_at && `sending ${esc(String(p.send_at).replace("T", " ").slice(0, 16))}`,
+     p.reason && esc(p.reason)].filter(Boolean).join(" · "),
+  ],
   "case.recovered": (p, c) => [
     `<strong>${money(c.amount_rupees)} paid</strong>`,
     (p.matched_by ? `attributed by <span class="mono">${esc(p.matched_by)}</span>` : "") +
@@ -149,6 +159,12 @@ async function story() {
   const total = events.length
     ? Math.round((new Date(events.at(-1).at).getTime() - t0) / 1000)
     : 0;
+  // Computed, never typed. This headline read "Forty-eight seconds" while the
+  // ledger directly below it said 78 -- on the one section of the page that
+  // claims nothing here is written for display.
+  $("#story-headline").textContent =
+    `One payment failed. ${total} seconds later it was paid.`;
+
   $("#story-note").innerHTML =
     `<p style="margin:0">Payment <span class="mono">${esc(c.external_ref)}</span> · ` +
     `${events.length} ledger entries · ${total} seconds from failure to payment. ` +
@@ -470,3 +486,121 @@ queue();
 scheduled();
 rules();
 ledger();
+tryPicker();
+
+
+/* ── 03 · the interactive demonstration ─────────────────────────────────
+   Renders whatever the ledger says. There is no branch here per failure
+   reason and no canned outcome: the page asks the server to inject one
+   payload, then reads back the decisions the real allocator made. If the
+   taxonomy changes, this section changes with it and nobody edits this file. */
+
+let tryBusy = false;
+
+async function tryPicker() {
+  const host = $("#try-picker");
+  if (!host) return;
+  let offers;
+  try {
+    offers = await get("/api/demo/causes");
+  } catch (err) {
+    fail("#try-picker", err);
+    return;
+  }
+
+  host.innerHTML = "";
+  offers.forEach((offer) => {
+    const b = el("button", "pick");
+    b.type = "button";
+    b.setAttribute("aria-pressed", "false");
+    b.dataset.reason = offer.error_reason;
+    b.innerHTML =
+      `<span class="pick-reason">${esc(offer.label)}</span>` +
+      `<span class="pick-expect">${esc(offer.expect)}</span>`;
+    b.addEventListener("click", () => runTry(offer, b));
+    host.appendChild(b);
+  });
+}
+
+async function runTry(offer, button) {
+  if (tryBusy) return;
+  tryBusy = true;
+
+  document.querySelectorAll(".pick").forEach((b) => {
+    b.setAttribute("aria-pressed", String(b === button));
+    b.disabled = true;
+  });
+
+  const rail = $("#try-rail");
+  const why = $("#try-why");
+  rail.innerHTML = `<p class="load">Injecting a ${esc(offer.error_reason)} failure…</p>`;
+  why.innerHTML = '<p class="load small muted">Deciding…</p>';
+
+  try {
+    const res = await fetch("/api/demo/simulate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error_reason: offer.error_reason }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `simulate → ${res.status}`);
+    }
+    const { case_id: caseId } = await res.json();
+    const data = await get(`/actions/case/${caseId}`);
+    renderTry(data, offer);
+  } catch (err) {
+    fail("#try-rail", err);
+    why.innerHTML = "";
+  } finally {
+    document.querySelectorAll(".pick").forEach((b) => { b.disabled = false; });
+    tryBusy = false;
+  }
+}
+
+function renderTry(data, offer) {
+  const c = data.case;
+  const events = data.ledger || [];
+  const rail = $("#try-rail");
+  rail.innerHTML = "";
+
+  // Revealed one at a time so the sequence reads as a sequence. The delay is
+  // presentation only -- every event below already happened, server-side,
+  // before this function was called.
+  events.forEach((event, i) => {
+    const [what, detail] = narrate(event, c);
+    const step = el("div", "step");
+    step.style.animationDelay = `${i * 260}ms`;
+    step.innerHTML =
+      `<div class="when">${i + 1}</div>` +
+      `<div class="what">${what}<span class="who">${esc(event.actor)}</span></div>` +
+      (detail ? `<div class="small muted">${detail}</div>` : "");
+    rail.appendChild(step);
+  });
+
+  const acted = (data.actions || [])[0];
+  const refused = !acted;
+  const verdict = refused
+    ? "No action taken"
+    : String(acted.type).replace(/_/g, " ");
+
+  $("#try-why").innerHTML =
+    `<div class="verdict${refused ? " refused" : ""}">` +
+      `<div class="num serif">${esc(verdict)}</div>` +
+      `<p class="small muted" style="margin:6px 0 0">${esc(offer.cause_label || c.cause || "")}</p>` +
+    "</div>" +
+    '<dl class="kv">' +
+      row("cause", c.cause || "unclassified") +
+      row("who can fix it", offer.who_can_fix) +
+      row("retrying the same instrument", offer.retry_policy) +
+      row("contacting the customer", offer.contact_ok ? "appropriate" : "not appropriate") +
+      row("case status", c.status) +
+    "</dl>" +
+    `<p class="small muted" style="margin-top:14px">Simulated failure ` +
+    `<span class="mono">${esc(c.external_ref)}</span>. Injected payload, real ` +
+    `decisions, no Razorpay call.</p>`;
+}
+
+function row(k, v) {
+  return `<dt>${esc(k)}</dt><dd>${esc(String(v ?? "—").replace(/_/g, " "))}</dd>`;
+}

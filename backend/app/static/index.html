@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Recoup — the revenue recovery control plane</title>
-<meta name="description" content="Razorpay's error taxonomy already knows the right recovery action. Recoup uses it." />
+<meta name="description" content="Razorpay’s error taxonomy already knows the right recovery action. Recoup uses it." />
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -12,7 +12,8 @@
 <nav class="nav" aria-label="Sections">
   <a href="#evidence"><span>Evidence</span><i></i></a>
   <a href="#taxonomy"><span>Taxonomy</span><i></i></a>
-  <a href="#worth"><span>What it's worth</span><i></i></a>
+  <a href="#try"><span>Try it</span><i></i></a>
+  <a href="#worth"><span>What it’s worth</span><i></i></a>
   <a href="#refused"><span>What we refused</span><i></i></a>
   <a href="#console"><span>Console</span><i></i></a>
 </nav>
@@ -23,7 +24,7 @@
 <section class="hero" id="top">
   <div class="wrap">
     <p class="eyebrow reveal">Recoup · revenue recovery control plane</p>
-    <h1 class="reveal" data-d="1">Razorpay's error taxonomy already knows the right recovery action.</h1>
+    <h1 class="reveal" data-d="1">Razorpay’s error taxonomy already knows the right recovery action.</h1>
     <p class="sub reveal" data-d="2">Almost nobody uses it. Most recovery systems retry — whatever the failure actually was.</p>
     <div class="markline"></div>
     <div class="reveal" data-d="3">
@@ -36,7 +37,7 @@
 <section id="evidence">
   <div class="wrap">
     <p class="eyebrow reveal">01 — Evidence</p>
-    <h2 class="reveal serif" data-d="1">One payment failed. Forty-eight seconds later it was paid.</h2>
+    <h2 class="reveal serif" data-d="1" id="story-headline">One payment failed, and was paid.</h2>
     <p class="lead narrow reveal" data-d="2">
       Not a simulation. A real payment through Razorpay test mode, recovered by
       an action this system chose on its own. Every line below is read from the
@@ -85,10 +86,49 @@
   </div>
 </section>
 
-<!-- ── act 3: what it's worth ───────────────────────────────────────── -->
+<!-- ── act 3: try it ────────────────────────────────────────────────── -->
+<section id="try">
+  <div class="wrap">
+    <p class="eyebrow reveal">03 — Try it</p>
+    <h2 class="reveal serif" data-d="1">Change the reason. Watch the decision change.</h2>
+    <p class="lead narrow reveal" data-d="2">
+      Pick a failure. The payload is injected here rather than delivered by
+      Razorpay — but from that point it runs the same adapter, the same
+      classifier, the same allocator and the same gates as a real webhook.
+      Nothing below is scripted, and no payment link is ever created.
+    </p>
+
+    <div class="picker reveal" data-d="3" id="try-picker"></div>
+
+    <div class="grid g2 reveal" data-d="4" style="margin-top:36px">
+      <div class="cell">
+        <p class="eyebrow" style="margin-bottom:16px">What the system did</p>
+        <div class="rail" id="try-rail">
+          <p class="load">Pick a failure above.</p>
+        </div>
+      </div>
+      <div class="cell">
+        <p class="eyebrow" style="margin-bottom:16px">Why</p>
+        <div id="try-why"><p class="load small muted">Nothing decided yet.</p></div>
+      </div>
+    </div>
+
+    <div class="note reveal small" data-d="5">
+      <p style="margin:0">
+        Two of the five produce <strong>no customer contact at all</strong>. A
+        risk block is refused outright — if the block is right, recovering the
+        payment means recovering a fraudulent one. A merchant misconfiguration
+        alerts the merchant, because the payer cannot fix a setting they do not
+        control. Knowing when <em>not</em> to act is most of the value here.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ── act 3: what it’s worth ───────────────────────────────────────── -->
 <section id="worth">
   <div class="wrap">
-    <p class="eyebrow reveal">03 — What it's worth</p>
+    <p class="eyebrow reveal">04 — What it’s worth</p>
     <h2 class="reveal serif" data-d="1">Choosing the action beats choosing the case.</h2>
     <p class="lead narrow reveal" data-d="2">
       Measured on <span class="num" id="w-cases">—</span> held-out simulated cases under an
@@ -98,7 +138,7 @@
 
     <div class="bars reveal" data-d="3" id="lever-action"></div>
     <p class="small muted reveal" style="margin-top:14px">
-      Baseline: a fixed retry at 24 hours — Razorpay's own documented subscription
+      Baseline: a fixed retry at 24 hours — Razorpay’s own documented subscription
       retry policy, and what most recovery tooling does by default.
     </p>
 
@@ -115,8 +155,8 @@
 <!-- ── act 4: negative results ──────────────────────────────────────── -->
 <section id="refused">
   <div class="wrap">
-    <p class="eyebrow reveal">04 — What we refused to build</p>
-    <h2 class="reveal serif" data-d="1">Three things that didn't work, kept in.</h2>
+    <p class="eyebrow reveal">05 — What we refused to build</p>
+    <h2 class="reveal serif" data-d="1">Three things that didn’t work, kept in.</h2>
     <p class="lead narrow reveal" data-d="2">
       These are measurements that went against the design. Removing them would
       have made the numbers above look better and mean less.
@@ -140,7 +180,7 @@
         </p>
       </div>
       <div class="cell">
-        <h3>The model can't beat the noise floor</h3>
+        <h3>The model can’t beat the noise floor</h3>
         <p class="small">
           Outcomes are Bernoulli draws, so ROC-AUC here is capped at
           <strong>0.637</strong>. Ours reaches 0.620 — 88% of what is achievable.
@@ -154,7 +194,7 @@
 <!-- ── act 5: live console ──────────────────────────────────────────── -->
 <section id="console">
   <div class="wrap">
-    <p class="eyebrow reveal">05 — Console</p>
+    <p class="eyebrow reveal">06 — Console</p>
     <h2 class="reveal serif" data-d="1">What it did, and what it refused to do.</h2>
     <p class="lead narrow reveal" data-d="2">
       Live, from the database behind this page. The panel that matters most is the
@@ -169,7 +209,7 @@
     <div class="panel reveal" style="margin-top:26px">
       <header>
         <h3>Awaiting human approval</h3>
-        <span class="small muted">High value, or a cause we weren't confident about</span>
+        <span class="small muted">High value, or a cause we weren’t confident about</span>
       </header>
       <div id="queue"><p class="load">Loading…</p></div>
     </div>

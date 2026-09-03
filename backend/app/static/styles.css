@@ -258,3 +258,55 @@ a { color: var(--blue-ink); text-decoration-thickness: 1px; text-underline-offse
   .row { flex-wrap: wrap; gap: 12px; }
   .row .money { min-width: 0; }
 }
+
+
+/* ── the interactive demonstration ──────────────────────────────────── */
+
+.picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 40px;
+}
+
+.pick {
+  flex: 1 1 220px;
+  text-align: left;
+  padding: 16px 18px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--paper);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color .18s ease, background .18s ease, transform .18s ease;
+}
+.pick:hover:not(:disabled) { border-color: var(--ink); transform: translateY(-2px); }
+.pick[aria-pressed="true"] { border-color: var(--ink); background: var(--ink); color: var(--paper); }
+.pick[aria-pressed="true"] .pick-expect { color: rgba(255,255,255,.72); }
+.pick:disabled { opacity: .5; cursor: progress; }
+
+.pick-reason {
+  display: block;
+  font-size: 15px;
+  line-height: 1.35;
+  margin-bottom: 6px;
+}
+.pick-expect {
+  display: block;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--ink-3);
+}
+
+#try-rail .step { opacity: 0; animation: stepIn .42s ease forwards; }
+@keyframes stepIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.verdict { border-left: 2px solid var(--ink); padding: 4px 0 4px 16px; margin-bottom: 18px; }
+.verdict .num { font-size: 22px; line-height: 1.25; }
+.verdict.refused { border-left-color: var(--red); }
+
+@media (prefers-reduced-motion: reduce) {
+  #try-rail .step { animation: none; opacity: 1; }
+  .pick:hover:not(:disabled) { transform: none; }
+}

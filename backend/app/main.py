@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import actions, dashboard, health, tasks, webhooks
+from app.api import actions, dashboard, demo, health, tasks, webhooks
 from app.db import init_db
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -36,6 +36,7 @@ app.include_router(webhooks.router)
 app.include_router(tasks.router)
 app.include_router(actions.router)
 app.include_router(dashboard.router)
+app.include_router(demo.router)
 
 
 # The console is a static page over the /api read models. Mounted last so it can
