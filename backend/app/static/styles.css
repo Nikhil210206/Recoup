@@ -56,7 +56,7 @@ body {
   font-feature-settings: "cv05" 1, "ss01" 1;
 }
 
-.wrap { max-width: 1060px; margin: 0 auto; padding: 0 40px; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 40px; }
 .narrow { max-width: var(--measure); }
 
 section { padding: 128px 0; border-top: 1px solid var(--rule); }
@@ -75,7 +75,11 @@ section:first-of-type { border-top: 0; }
 
 h1, h2, h3 { font-weight: 400; letter-spacing: -0.022em; margin: 0; text-wrap: balance; }
 
-h1 { font-size: clamp(38px, 6.2vw, 68px); line-height: 1.06; letter-spacing: -0.034em; }
+/* The 68px cap left a 2000px display mostly empty: the type stopped growing
+   while the viewport kept going. 84px keeps the hero proportionate on a large
+   external monitor without touching laptop sizes, where 6.2vw is still the
+   binding constraint. */
+h1 { font-size: clamp(38px, 6.2vw, 84px); line-height: 1.06; letter-spacing: -0.034em; }
 h2 { font-size: clamp(28px, 3.6vw, 40px); line-height: 1.14; margin-bottom: 20px; }
 h3 { font-size: 20px; line-height: 1.3; margin-bottom: 10px; }
 
