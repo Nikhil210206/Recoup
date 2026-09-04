@@ -14,7 +14,14 @@ services:
     name: recoup
     runtime: docker
     plan: free
-    region: singapore # closest to Razorpay's infrastructure and to the judges
+    # Must match the database's region -- Render's private networking (the
+    # internal `dpg-...` hostname behind DATABASE_URL) does not cross regions.
+    # The first deploy put this service in Singapore while the database
+    # defaulted to Oregon, and the app failed at startup with
+    # "failed to resolve host 'dpg-...': Name or service not known" -- DNS for
+    # a database in a different region simply isn't visible here. Oregon,
+    # matching the database below, not a latency preference.
+    region: oregon
     dockerfilePath: ./Dockerfile
     dockerContext: . # repo root, NOT backend/ -- see the note in the Dockerfile
     healthCheckPath: /health
@@ -49,6 +56,8 @@ services:
 databases:
   - name: recoup-db
     plan: free
+    region: oregon # pinned explicitly so a future edit can't reintroduce the
+                   # region mismatch above by relying on an unstated default
     databaseName: recoup
     user: recoup
 
