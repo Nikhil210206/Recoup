@@ -39,6 +39,13 @@ services:
       - key: RAZORPAY_WEBHOOK_SECRET
         sync: false
 
+      # Guards /tasks/* and any live=true / force=true call. Without it a public
+      # URL lets anyone drive the recovery loop, and force=true would write a
+      # human override into the append-only ledger that no human made.
+      # Render can generate this one; it is not a credential from elsewhere.
+      - key: TASKS_TOKEN
+        generateValue: true
+
 databases:
   - name: recoup-db
     plan: free

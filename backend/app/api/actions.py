@@ -13,11 +13,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.allocator.budget import BudgetPolicy
+from app.api.guard import assert_privileged, require_token
 from app.db import get_db
 from app.models import Action, ActionStatus, Case, CaseStatus
 from app.services import actions as action_tools
@@ -74,7 +75,7 @@ def _build_allocator(budget: int) -> Allocator:
     )
 
 
-@router.post("/allocate")
+@router.post("/allocate", dependencies=[Depends(require_token)])
 def allocate(
     limit: int = 500,
     budget: int = 100,
@@ -145,6 +146,7 @@ def approve(
     execute_now: bool = Body(default=True, embed=True),
     live: bool = Body(default=False, embed=True),
     db: Session = Depends(get_db),
+    x_recoup_token: str | None = Header(default=None),
 ) -> dict:
     """Release a queued action.
 
@@ -152,6 +154,11 @@ def approve(
     not an approval anyone can be accountable for.
     """
     from app.simulation.outcomes import ActionType
+
+    if live:
+        # Approving is open so a judge can use the console; approving *live* is
+        # not, because that reaches Razorpay. The console always sends false.
+        assert_privileged(x_recoup_token, what="live=true")
 
     action = _load_pending(db, action_id)
     case = db.scalar(select(Case).where(Case.id == action.case_id))

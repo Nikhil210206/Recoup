@@ -28,6 +28,11 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = ""
 
+    #: Shared secret for the automation endpoints and for any call that sets
+    #: `live` or `force`. Empty is tolerated in development and refused in
+    #: production -- see api/guard.py.
+    tasks_token: str = ""
+
     # Quiet hours are enforced in IST. No customer contact inside this window.
     quiet_hours_start: int = Field(default=21, ge=0, le=23)
     quiet_hours_end: int = Field(default=9, ge=0, le=23)

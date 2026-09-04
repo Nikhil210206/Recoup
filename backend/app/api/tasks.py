@@ -12,10 +12,11 @@ add a moving part without removing one.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.guard import assert_privileged, require_token
 from app.db import get_db
 from app.models import Case, CaseStatus
 from app.services.ingest import classify_pending
@@ -24,7 +25,11 @@ from app.services.ingest import classify_pending
 # pulls pandas and pyarrow, and this module is on the import path of every
 # process that serves a webhook. See the note in api/actions.py.
 
-router = APIRouter(prefix="/tasks", tags=["tasks"])
+#: Every endpoint here is driven by a scheduler, never by a person, so the
+#: whole router is behind the token rather than each handler remembering.
+router = APIRouter(
+    prefix="/tasks", tags=["tasks"], dependencies=[Depends(require_token)]
+)
 
 
 @router.post("/classify-pending")
@@ -52,6 +57,7 @@ def run_execute_due(
     live: bool = False,
     force: bool = False,
     db: Session = Depends(get_db),
+    x_recoup_token: str | None = Header(default=None),
 ) -> dict:
     """Send contacts whose deferral has expired.
 
@@ -66,6 +72,12 @@ def run_execute_due(
     demonstration, and logged to the ledger as a human override. It does not
     bypass quiet hours.
     """
+    if force:
+        # Belt and braces. The router dependency already ran, but `force` writes
+        # a human override into the ledger and that guarantee should not depend
+        # on a decorator somewhere else staying where it is.
+        assert_privileged(x_recoup_token, what="force=true")
+
     from app.services import live_allocator
 
     return live_allocator.execute_due(db, limit=limit, live=live, force=force)

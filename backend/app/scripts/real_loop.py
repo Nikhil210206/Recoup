@@ -27,6 +27,7 @@ from dataclasses import dataclass
 
 import razorpay
 
+from app.api.guard import HEADER as GUARD_HEADER
 from app.config import get_settings
 
 BASE = os.environ.get("RECOUP_API", "http://localhost:8000")
@@ -46,10 +47,17 @@ def _get(path: str):
 
 def _post(path: str, body: dict | None = None):
     data = json.dumps(body).encode() if body else b""
-    request = urllib.request.Request(
-        BASE + path, data=data, method="POST",
-        headers={"Content-Type": "application/json"},
-    )
+    headers = {"Content-Type": "application/json"}
+
+    # This script is the one legitimate caller of the privileged parameters: it
+    # allocates live and forces past the cause delay, because a hard decline now
+    # waits six hours and a demonstration cannot. It therefore has to present
+    # the same token the scheduler does.
+    token = get_settings().tasks_token
+    if token:
+        headers[GUARD_HEADER] = token
+
+    request = urllib.request.Request(BASE + path, data=data, method="POST", headers=headers)
     return json.loads(urllib.request.urlopen(request, timeout=180).read())
 
 
