@@ -1,0 +1,141 @@
+{
+  "case": {
+    "id": "be4d3bdf-7df8-4c2b-9ef4-281754c4d099",
+    "external_ref": "pay_TXy8Mlm64JGRPe",
+    "channel": "failed_payment",
+    "status": "recovered",
+    "amount_rupees": 2499.0,
+    "cause": "hard_decline",
+    "cause_confidence": 1.0,
+    "cause_method": "deterministic"
+  },
+  "actions": [
+    {
+      "id": "05219e94-62bb-469a-82a9-b1b46ff0f036",
+      "type": "method_switch_prompt",
+      "attempt": 1,
+      "status": "executed",
+      "idempotency_key": "be4d3bdf-7df8-4c2b-9ef4-281754c4d099:method_switch_prompt:1",
+      "rule": "quiet_hours",
+      "approval_reason": null,
+      "approved_by": null,
+      "external_ref": "plink_TXy944qHK6lfLL"
+    }
+  ],
+  "ledger": [
+    {
+      "seq": 1,
+      "event": "case.opened",
+      "actor": "webhook",
+      "at": "2026-09-04T13:01:53.227201+00:00",
+      "payload": {
+        "channel": "failed_payment",
+        "order_id": "order_TXy2vZ0fkPcrU0",
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_step": "payment_authorization",
+        "amount_paise": 249900,
+        "error_reason": "payment_failed",
+        "error_source": "gateway",
+        "razorpay_payment_id": "pay_TXy8Mlm64JGRPe"
+      }
+    },
+    {
+      "seq": 2,
+      "event": "case.diagnosed",
+      "actor": "classifier",
+      "at": "2026-09-04T13:01:53.227201+00:00",
+      "payload": {
+        "cause": "hard_decline",
+        "model": null,
+        "cached": false,
+        "method": "deterministic",
+        "rationale": null,
+        "threshold": 0.7,
+        "confidence": 1.0,
+        "latency_ms": 0,
+        "matched_on": "error_reason=payment_failed"
+      }
+    },
+    {
+      "seq": 3,
+      "event": "action.claimed",
+      "actor": "allocator",
+      "at": "2026-09-04T13:02:21.735912+00:00",
+      "payload": {
+        "rule": "quiet_hours",
+        "attempt_no": 1,
+        "action_type": "method_switch_prompt",
+        "approval_reason": null,
+        "idempotency_key": "be4d3bdf-7df8-4c2b-9ef4-281754c4d099:method_switch_prompt:1",
+        "predicted_uplift": 1.0,
+        "expected_value_paise": 249875
+      }
+    },
+    {
+      "seq": 4,
+      "event": "case.action_deferred",
+      "actor": "executor",
+      "at": "2026-09-04T13:02:21.810934+00:00",
+      "payload": {
+        "rule": "quiet_hours",
+        "due_at": "2026-09-05T03:30:00+00:00",
+        "reason": "deferred_8.5h_out_of_quiet_hours_ist",
+        "delay_h": 14.46,
+        "action_id": "05219e94-62bb-469a-82a9-b1b46ff0f036",
+        "waiting_h": 14.46,
+        "action_type": "method_switch_prompt"
+      }
+    },
+    {
+      "seq": 5,
+      "event": "case.schedule_overridden",
+      "actor": "human",
+      "at": "2026-09-04T13:02:23.300544+00:00",
+      "payload": {
+        "note": "operator sent ahead of the cause-implied delay",
+        "action_id": "05219e94-62bb-469a-82a9-b1b46ff0f036",
+        "was_due_at": "2026-09-05T03:30:00+00:00",
+        "action_type": "method_switch_prompt",
+        "sent_early_by_h": 14.46
+      }
+    },
+    {
+      "seq": 6,
+      "event": "action.executed",
+      "actor": "executor",
+      "at": "2026-09-04T13:02:25.408633+00:00",
+      "payload": {
+        "detail": "payment link plink_TXy944qHK6lfLL",
+        "action_id": "05219e94-62bb-469a-82a9-b1b46ff0f036",
+        "short_url": "https://rzp.io/rzp/zZicXn3",
+        "attempt_no": 1,
+        "action_type": "method_switch_prompt",
+        "external_ref": "plink_TXy944qHK6lfLL"
+      }
+    },
+    {
+      "seq": 7,
+      "event": "case.recovered",
+      "actor": "webhook",
+      "at": "2026-09-04T13:05:43.701420+00:00",
+      "payload": {
+        "order_id": "order_TXy9Y8nHPF96YR",
+        "matched_by": "notes.recoup_case_id",
+        "amount_paise": 249900,
+        "payment_link_id": null,
+        "recovering_payment_id": "pay_TXyCQdSZsNW0Bc"
+      }
+    }
+  ],
+  "_context": "Recovered against the DEPLOYED service on Render, not local dev/tunnel. See docs/evidence/README.md.",
+  "_razorpay_cross_check": {
+    "plink_TXy944qHK6lfLL": {
+      "status": "paid",
+      "reference_id": "rcp_be4d3bdf7df84c2b9ef4281754c4d099"
+    },
+    "pay_TXyCQdSZsNW0Bc": {
+      "status": "captured",
+      "amount_rupees": 2499.0
+    }
+  }
+}

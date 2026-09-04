@@ -60,3 +60,45 @@ make real-loop    # in another; it pauses twice for a human to pay
 
 Requires Razorpay test keys in `.env` and a public tunnel pointed at
 `/webhooks/razorpay`.
+
+## A second recovery, against the deployed service
+
+`real_loop_deployed.json` is the same loop, run again on 2026-09-04 — this time
+against the service running on Render, not local dev behind a tunnel. Different
+case, same outcome, and it exercises a path the first recovery did not.
+
+| | |
+|---|---|
+| Case | `pay_TXy8Mlm64JGRPe` |
+| Amount | ₹2,499 |
+| Cause | `hard_decline` — confidence 1.0, deterministic |
+| Action chosen | `method_switch_prompt` |
+| Razorpay payment link | `plink_TXy944qHK6lfLL` |
+| Final status | **RECOVERED** |
+
+Its ledger has two events the first recovery's does not:
+
+| # | event | actor | note |
+|---|---|---|---|
+| 4 | `case.action_deferred` | executor | scheduled 14.46h out, per the cause-implied delay |
+| 5 | `case.schedule_overridden` | human | sent early, logged as an operator decision |
+
+The allocator's first instinct was to wait — a `hard_decline` on this account
+schedules its contact hours out, and it deferred correctly, on the deployed
+service, using its own clock. The early send exists only because a demo cannot
+wait fourteen hours, and it is recorded as what it is: a human overriding the
+system, not the system deciding to act sooner.
+
+Cross-checked against Razorpay: link `plink_TXy944qHK6lfLL` reports status
+`paid`, and the capturing payment `pay_TXyCQdSZsNW0Bc` shows `captured` for the
+full ₹2,499.
+
+Reproduced with:
+
+```bash
+RECOUP_API=https://recoup-yti2.onrender.com \
+  .venv/bin/python -m app.scripts.real_loop
+```
+
+No tunnel needed — Razorpay's webhook was already pointed at the permanent
+Render URL.
