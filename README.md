@@ -7,11 +7,18 @@ held-out data, in all three world parameterisations. This repository is that
 finding, the system that acts on it, and the governance layer that makes
 automating it safe
 
+**Running live: <https://recoup-yti2.onrender.com>**
+
+The deployed console, reading its own database — including a section that lets
+you pick a failure reason and watch the system decide, live. It runs on a free
+tier that sleeps when idle, so the first request after a quiet period takes
+about a minute to wake. It is not broken; it is asleep.
+
 ## What is real and what is not
 
 Read this first; everything below depends on it.
 
-| | The benchmark (12,004 cases) | The real loop (1 case) |
+| | The benchmark (12,004 cases) | The real loops (2 cases) |
 |---|---|---|
 | Failed payments | **Synthetic**, seed 42, assumptions declared in [`data/ASSUMPTIONS.md`](data/ASSUMPTIONS.md) | **Real** `payment.failed` webhook, HMAC-verified |
 | Classification | Real `taxonomy.classify` — the deterministic tier only, no LLM tail | **Real** — deterministic, confidence 1.0 |
@@ -183,8 +190,21 @@ It chose a **method switch, not a retry** — the issuer had declined the card, 
 retrying the same instrument gets declined again. Razorpay's own error taxonomy
 already said so.
 
-Unedited trail in [`docs/evidence/`](docs/evidence/). Reproduce with
-`make real-loop`.
+It has since closed a **second** real loop, this time against the deployed
+service rather than a local tunnel. That trail has two events the first does not:
+
+```
+4  case.action_deferred      executor   scheduled 14.5h out, per the cause
+5  case.schedule_overridden   human      sent early, logged as a human decision
+```
+
+The allocator's first instinct was to **wait** — a hard decline implies a delay,
+and it applied one, in production, on its own clock. The early send happened only
+because a demonstration cannot wait fourteen hours, and it is recorded as what it
+was: a person overriding the system, not the system changing its mind.
+
+Both trails, unedited, in [`docs/evidence/`](docs/evidence/) — each
+cross-checked against Razorpay's own records. Reproduce with `make real-loop`.
 
 ## Evaluation
 
