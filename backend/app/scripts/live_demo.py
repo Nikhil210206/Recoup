@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.request
 
+from app.api.guard import HEADER as GUARD_HEADER
 from app.config import get_settings
 
 #: 8000 is a common default and was already taken by another local project on
@@ -44,10 +45,14 @@ SCENARIOS = [
 
 def _post(path: str, body=None, raw: bytes | None = None, headers=None):
     data = raw if raw is not None else (json.dumps(body).encode() if body else b"")
-    request = urllib.request.Request(
-        BASE + path, data=data, method="POST",
-        headers=headers or {"Content-Type": "application/json"},
-    )
+    headers = dict(headers or {"Content-Type": "application/json"})
+    # `/actions/allocate` sits behind the same token as the scheduler endpoints.
+    # This script predates that guard; without this it 401s against a deployed
+    # service that has TASKS_TOKEN set, same as real_loop.py needed the fix.
+    token = get_settings().tasks_token
+    if token:
+        headers[GUARD_HEADER] = token
+    request = urllib.request.Request(BASE + path, data=data, method="POST", headers=headers)
     return json.loads(urllib.request.urlopen(request, timeout=180).read())
 
 
