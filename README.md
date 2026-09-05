@@ -351,7 +351,3 @@ backend/app/
   static/       the console -- one page, no framework, no build step
   taxonomy.py   canonical causes mapped from Razorpay's published error codes
 ```
-
-## Licence
-
-MIT
