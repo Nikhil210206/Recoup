@@ -7,7 +7,7 @@ held-out data, in all three world parameterisations. This repository is that
 finding, the system that acts on it, and the governance layer that makes
 automating it safe
 
-**Running live: <https://recoup-yti2.onrender.com>**
+**Running live: <https://recoup-yti2.onrender.com>** - first load takes ~1 minute — free tier, it sleeps when idle.
 
 The deployed console, reading its own database — including a section that lets
 you pick a failure reason and watch the system decide, live. It runs on a free
