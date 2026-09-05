@@ -5,6 +5,25 @@ them. Written as they happened, not reconstructed afterwards.
 
 Format: what I expected, what actually happened, why, and the fix.
 
+**51 entries over 13 days.** It is long because the project was audited after
+every day, and because I wrote down the ones that made me look bad too. If you
+are sampling rather than reading, these five are the ones I would pick:
+
+| | Why it is worth reading |
+|---|---|
+| [The test suite deleted the real data it had just proved was working](#the-test-suite-deleted-the-real-data-it-had-just-proved-was-working) | The first captured webhook, destroyed by my own `conftest.py` |
+| [A policy was reading the answer key](#day-2-3-audit-a-policy-was-reading-the-answer-key) | Named for observables, actually reading `latent_cause`. Every test passed. |
+| [My own baseline was a strawman, in my favour](#day-7-audit-my-own-baseline-was-a-strawman-in-my-favour) | The comparison was rigged. Fixing it moved the entire thesis. |
+| [The second real run claimed a recovery it had nothing to do with](#the-second-real-run-claimed-a-recovery-it-had-nothing-to-do-with) | Real money, false credit — the worst class of bug here |
+| [The system computed a send time, recorded it, and then ignored it](#the-system-computed-a-send-time-recorded-it-and-then-ignored-it) | The evaluation modelled timing; the deployed system did not do it |
+
+**The recurring shape**, across all of them: not crashes, but values of the right
+type, in a believable range, with a correct-sounding name, measuring the wrong
+thing. None of these ever failed a test — a test asserts a number exists and is
+in range, and all of these produced numbers in range. What found them was
+recomputing a claimed number a second way, and asking what it would look like if
+it were wrong.
+
 ---
 
 ## 2026-08-22 — Day 0
