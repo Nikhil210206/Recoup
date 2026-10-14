@@ -1,6 +1,6 @@
 # Recoup
 
-**Razorpay's error taxonomy already knows the right recovery action. Almost nobody uses it.**
+**Razorpay's error taxonomy already knows the right recovery action. Almost nobody uses it !**
 
 Using it is worth roughly **5×** against a fixed retry schedule — measured, on
 held-out data, in all three world parameterisations. This repository is that
