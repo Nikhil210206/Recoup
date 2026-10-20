@@ -49,7 +49,139 @@ const seen = new IntersectionObserver(
   { threshold: 0.15, rootMargin: "0px 0px -8% 0px" },
 );
 const watch = (root = document) =>
-  root.querySelectorAll(".reveal:not(.in), .markline:not(.in), .step:not(.in)").forEach((n) => seen.observe(n));
+  root.querySelectorAll(".reveal:not(.in), .split:not(.in), .step:not(.in)").forEach((n) => seen.observe(n));
+
+/* Headlines rise a character at a time, so each character needs its own box.
+   Characters are grouped per word so a line can only break between words, and
+   the heading keeps its plain text as its accessible name -- a screen reader
+   should hear a sentence, not a spelling. */
+function split(node) {
+  const label = node.textContent.replace(/\s+/g, " ").trim();
+  let i = 0;
+  const walk = (parent) => {
+    for (const child of [...parent.childNodes]) {
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        walk(child);
+        continue;
+      }
+      if (child.nodeType !== Node.TEXT_NODE) continue;
+      const frag = document.createDocumentFragment();
+      for (const part of child.textContent.split(/(\s+)/)) {
+        if (!part) continue;
+        if (/^\s+$/.test(part)) {
+          frag.append(" ");
+          continue;
+        }
+        const word = el("span", "w");
+        for (const ch of part) {
+          const c = el("span", "c");
+          c.textContent = ch;
+          c.style.setProperty("--i", i++);
+          word.append(c);
+        }
+        frag.append(word);
+      }
+      child.replaceWith(frag);
+    }
+  };
+  walk(node);
+  node.setAttribute("aria-label", label);
+  [...node.children].forEach((child) => child.setAttribute("aria-hidden", "true"));
+}
+
+/* Swap a split headline's words and play its entrance again if it has
+   already been seen. Used where the words come from the ledger. */
+function reheadline(node, lead, accent) {
+  node.innerHTML = `<span class="lead">${esc(lead)}</span> <span class="accent">${esc(accent)}</span>`;
+  split(node);
+  if (!node.classList.contains("in")) return;
+  node.classList.remove("in");
+  void node.offsetWidth;
+  node.classList.add("in");
+}
+
+/* The highlighter only sweeps once its words are on the page. Without this a
+   card that had already scrolled into view would show the mark fully drawn. */
+const arm = (node) =>
+  requestAnimationFrame(() => requestAnimationFrame(() => node && node.classList.add("ready")));
+
+/* ── dot fields ───────────────────────────────────────────────────── */
+
+/* Ordered dither: a fixed grid of dots, each sized by comparing a smooth field
+   against a 4x4 Bayer threshold, which gives three dot sizes and no noise. The
+   field is a set of slow rings, about one wavelength every four seconds. It
+   only animates while on screen, and holds still under reduced motion. */
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const still = matchMedia("(prefers-reduced-motion: reduce)");
+
+const FIELDS = {
+  hero: (x, y, w, h, t) => ring(x - w * 0.98, y - h * 0.7, Math.min(w, 1240) * 0.62, t),
+  worth: (x, y, w, h, t) => ring(x - w, y, Math.min(w, 1240) * 0.5, t) * 0.9,
+  arch: (x, y, w, h, t) => ring(x - w / 2, y, Math.max(w * 0.5, h * 0.75), t) * Math.max(0, 1 - y / (h * 0.42)),
+};
+
+function ring(dx, dy, radius, t) {
+  const d = Math.hypot(dx, dy) / radius;
+  if (d >= 1) return 0;
+  const wave = 0.5 + 0.5 * Math.sin((d / 0.16 - t / 4) * Math.PI * 2);
+  return (1 - d) * (0.45 + 0.55 * wave);
+}
+
+function dots(canvas) {
+  const field = FIELDS[canvas.dataset.dots];
+  if (!field) return;
+  const ctx = canvas.getContext("2d");
+  const step = 10;
+  let w = 0;
+  let h = 0;
+  let visible = false;
+  let frame = 0;
+  let last = 0;
+
+  const paint = (t) => {
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = getComputedStyle(canvas).getPropertyValue("--dot").trim() || "#0c2451";
+    ctx.beginPath();
+    for (let j = 0, rows = Math.ceil(h / step); j < rows; j++) {
+      for (let i = 0, cols = Math.ceil(w / step); i < cols; i++) {
+        const x = i * step + step / 2;
+        const y = j * step + step / 2;
+        const v = field(x, y, w, h, t);
+        if (v <= 0) continue;
+        const th = BAYER[(j & 3) * 4 + (i & 3)] / 16;
+        const r = v > th + 0.5 ? 3.2 : v > th + 0.22 ? 2.2 : v > th ? 1.2 : 0;
+        if (!r) continue;
+        ctx.moveTo(x + r, y);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+      }
+    }
+    ctx.fill();
+  };
+  const loop = (now) => {
+    frame = 0;
+    if (!visible || still.matches) return;
+    if (now - last > 33) {
+      last = now;
+      paint(now / 1000);
+    }
+    frame = requestAnimationFrame(loop);
+  };
+  const resize = () => {
+    const box = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = box.width;
+    h = box.height;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    paint(performance.now() / 1000);
+  };
+  new ResizeObserver(resize).observe(canvas);
+  new IntersectionObserver(([entry]) => {
+    visible = entry.isIntersecting;
+    if (visible && !frame) frame = requestAnimationFrame(loop);
+  }).observe(canvas);
+}
 
 /* ── section nav ──────────────────────────────────────────────────── */
 
@@ -135,11 +267,13 @@ async function story() {
     data = await get("/api/evidence");
   } catch (err) {
     fail("#story", err);
+    fail("#hero-fields", err);
     return;
   }
   const c = data.case;
   const events = data.ledger || [];
   $("#hero-amount").textContent = money(c.amount_rupees);
+  hero(data);
 
   const rail = $("#story");
   rail.innerHTML = "";
@@ -162,8 +296,7 @@ async function story() {
   // Computed, never typed. This headline read "Forty-eight seconds" while the
   // ledger directly below it said 78 -- on the one section of the page that
   // claims nothing here is written for display.
-  $("#story-headline").textContent =
-    `One payment failed. ${total} seconds later it was paid.`;
+  reheadline($("#story-headline"), "One payment failed.", `${total} seconds later it was paid.`);
 
   $("#story-note").innerHTML =
     `<p style="margin:0">Payment <span class="mono">${esc(c.external_ref)}</span> · ` +
@@ -175,33 +308,54 @@ async function story() {
   requestAnimationFrame(() => rail.style.setProperty("--fill", "100%"));
 }
 
+/* The four fields Razorpay sent, with the one the decision turned on marked. */
+function sent(p) {
+  return [
+    ["error_code", p.error_code],
+    ["error_source", p.error_source],
+    ["error_step", p.error_step],
+    ["error_reason", p.error_reason],
+  ]
+    .map(([k, v]) =>
+      `<dt>${k}</dt><dd>${k === "error_reason" ? `<mark class="hl">${esc(v ?? "—")}</mark>` : esc(v ?? "—")}</dd>`)
+    .join("");
+}
+
+/* The hero is the real case's webhook, read from the same ledger as act 1. */
+function hero(data) {
+  const ledger = data.ledger || [];
+  const opened = ledger.find((e) => e.event === "case.opened");
+  const claimed = ledger.find((e) => e.event === "action.claimed");
+  $("#hero-ref").textContent = data.case.external_ref ?? "";
+  $("#hero-fields").innerHTML = sent(opened ? opened.payload : {});
+  $("#hero-action").textContent = String(claimed?.payload.action_type ?? "—").replace(/_/g, " ");
+  const status = $("#hero-status");
+  status.textContent = `${data.case.status} · ${money(data.case.amount_rupees)}`;
+  status.hidden = false;
+  arm($("#hero-card"));
+}
+
 function taxonomy(data) {
   const opened = (data.ledger || []).find((e) => e.event === "case.opened");
   const diagnosed = (data.ledger || []).find((e) => e.event === "case.diagnosed");
   const claimed = (data.ledger || []).find((e) => e.event === "action.claimed");
   const p = opened ? opened.payload : {};
 
-  $("#tax-fields").innerHTML = [
-    ["error_code", p.error_code],
-    ["error_source", p.error_source],
-    ["error_step", p.error_step],
-    ["error_reason", p.error_reason],
-  ]
-    .map(([k, v]) => `<dt>${k}</dt><dd>${esc(v ?? "—")}</dd>`)
-    .join("");
+  $("#tax-fields").innerHTML = sent(p);
+  arm($("#tax-sent"));
 
   const d = diagnosed ? diagnosed.payload : {};
   $("#tax-cause").innerHTML =
-    `<p style="font-size:22px;margin:0 0 8px;color:var(--ink)">${esc(d.cause ?? "—")}</p>` +
+    `<p class="figure">${esc(d.cause ?? "—")}</p>` +
     `<span class="tag blue">${esc(d.method ?? "—")}</span>` +
-    `<p class="small" style="margin-top:14px">Matched on <span class="mono">${esc(d.matched_on ?? "—")}</span> ` +
+    `<p class="small" style="margin:14px 0 0">Matched on <span class="mono">${esc(d.matched_on ?? "—")}</span> ` +
     `at confidence ${d.confidence != null ? Number(d.confidence).toFixed(2) : "—"}.</p>`;
 
   const a = claimed ? claimed.payload : {};
   $("#tax-action").innerHTML =
-    `<p style="font-size:22px;margin:0 0 8px;color:var(--ink)">${esc(String(a.action_type ?? "—").replace(/_/g, " "))}</p>` +
+    `<p class="figure">${esc(String(a.action_type ?? "—").replace(/_/g, " "))}</p>` +
     `<span class="tag green">not a retry</span>` +
-    `<p class="small" style="margin-top:14px">Expected value ${money(a.expected_value_paise != null ? a.expected_value_paise / 100 : null)} ` +
+    `<p class="small" style="margin:14px 0 0">Expected value ${money(a.expected_value_paise != null ? a.expected_value_paise / 100 : null)} ` +
     `at ${a.predicted_uplift != null ? (a.predicted_uplift * 100).toFixed(1) + "%" : "—"} predicted uplift.</p>`;
 }
 
@@ -274,8 +428,11 @@ async function overview() {
       `${q.start_ist}:00–${q.end_ist}:00 IST · now ${q.now_ist}`,
     ],
   ];
+  // The recovered figure is the one the page exists to show, so it carries the
+  // highlighter; the other five stay on paper.
   $("#overview").innerHTML = cells
-    .map(([k, v, n]) => `<div class="cell stat"><div class="k">${k}</div><div class="v">${v}</div><div class="n">${n}</div></div>`)
+    .map(([k, v, n]) =>
+      `<div class="cell stat${k === "Recovered" ? " hot" : ""}"><div class="k">${k}</div><div class="v">${v}</div><div class="n">${n}</div></div>`)
     .join("");
 }
 
@@ -426,7 +583,7 @@ async function rules() {
     return;
   }
   node.innerHTML =
-    '<div class="grid g3" style="border:0;border-radius:0">' +
+    '<div class="grid g3">' +
     items
       .map((r) => {
         const [tone, meaning] = OUTCOME[r.outcome] ?? ["grey", r.outcome];
@@ -434,7 +591,7 @@ async function rules() {
           `<div class="cell stat">` +
           `<div class="k">${esc(r.rule.replace(/_/g, " "))}</div>` +
           `<div class="v">${count(r.count)}</div>` +
-          `<div style="margin:9px 0 7px"><span class="tag ${tone}">${esc(meaning)}</span></div>` +
+          `<div class="tagline"><span class="tag ${tone}">${esc(meaning)}</span></div>` +
           `<div class="n">${esc(RULE_COPY[r.rule] ?? "")}</div></div>`
         );
       })
@@ -477,7 +634,12 @@ async function ledger() {
 
 /* ── go ───────────────────────────────────────────────────────────── */
 
-watch();
+/* Headlines wait for their fonts, or 1.2s, whichever comes first: a heading
+   that rises in a fallback face and then swaps mid-flight reads as a glitch.
+   The dot fields need no text, so they start straight away. */
+document.querySelectorAll(".split").forEach(split);
+document.querySelectorAll("canvas[data-dots]").forEach(dots);
+Promise.race([document.fonts?.ready, new Promise((r) => setTimeout(r, 1200))]).then(() => watch());
 nav();
 story();
 levers();
@@ -563,13 +725,15 @@ function renderTry(data, offer) {
   const events = data.ledger || [];
   const rail = $("#try-rail");
   rail.innerHTML = "";
+  rail.style.setProperty("--fill", "0%");
+  requestAnimationFrame(() => requestAnimationFrame(() => rail.style.setProperty("--fill", "100%")));
 
   // Revealed one at a time so the sequence reads as a sequence. The delay is
   // presentation only -- every event below already happened, server-side,
   // before this function was called.
   events.forEach((event, i) => {
     const [what, detail] = narrate(event, c);
-    const step = el("div", "step");
+    const step = el("div", "step in");
     step.style.animationDelay = `${i * 260}ms`;
     step.innerHTML =
       `<div class="when">${i + 1}</div>` +
@@ -586,8 +750,8 @@ function renderTry(data, offer) {
 
   $("#try-why").innerHTML =
     `<div class="verdict${refused ? " refused" : ""}">` +
-      `<div class="num serif">${esc(verdict)}</div>` +
-      `<p class="small muted" style="margin:6px 0 0">${esc(offer.cause_label || c.cause || "")}</p>` +
+      `<div class="num">${esc(verdict)}</div>` +
+      `<p class="small">${esc(offer.cause_label || c.cause || "")}</p>` +
     "</div>" +
     '<dl class="kv">' +
       row("cause", c.cause || "unclassified") +
